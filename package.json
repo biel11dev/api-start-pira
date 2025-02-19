@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "node server.js",
     "start": "node server.js",
-    "vercel-build": "npx sequelize-cli db:migrate"
+    "vercel-build": "chmod +x node_modules/.bin/sequelize-cli && sequelize db:migrate"
   },
   "keywords": [],
   "author": "",
