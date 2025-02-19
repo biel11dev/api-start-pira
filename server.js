@@ -115,6 +115,23 @@ app.post("/payments", async (req, res) => {
 });
 
 // Rotas para DailyReadings
+
+app.get("/daily-readings", async (req, res) => {
+  const { machineId, date } = req.query;
+  try {
+    const dailyReadings = await prisma.dailyReading.findMany({
+      where: {
+        machineId: parseInt(machineId),
+        date: date,
+      },
+    });
+    res.json(dailyReadings);
+  } catch (error) {
+    console.error("Erro ao buscar leituras diárias:", error);
+    res.status(500).json({ message: "Erro ao buscar leituras diárias" });
+  }
+});
+
 app.post("/daily-readings", async (req, res) => {
   const { date, value, machineId } = req.body;
   const newDailyReading = await prisma.dailyReading.create({
