@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "node server.js",
     "start": "node server.js",
-    "vercel-build": "npx prisma migrate deploy && npx prisma generate && npx prisma validate && node server.js"
+    "vercel-build": "npx prisma migrate deploy && npx prisma generate && npx prisma validate"
   },
   "keywords": [],
   "author": "",
