@@ -130,7 +130,7 @@ app.get("/daily-readings", async (req, res) => {
     res.json(dailyReadings);
   } catch (error) {
     console.error("Erro ao buscar leituras diárias:", error);
-    res.status(500).json({ message: "Erro ao buscar leituras diárias" });
+    res.status(500).json({ message: "Erro ao buscar leituras diárias", details: error.message });
   }
 });
 
