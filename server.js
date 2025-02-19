@@ -8,7 +8,20 @@ const prisma = new PrismaClient();
 const app = express();
 const port = 3000;
 
-app.use(cors());
+const allowedOrigins = ["https://start-pira-ftd.vercel.app"];
+app.use(
+  cors({
+    origin: function (origin, callback) {
+      // Permitir solicitações sem origem (como Postman)
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.indexOf(origin) === -1) {
+        const msg = "A política de CORS não permite acesso a partir da origem especificada.";
+        return callback(new Error(msg), false);
+      }
+      return callback(null, true);
+    },
+  })
+);
 app.use(express.json());
 
 const SECRET_KEY = process.env.SECRET_KEY || "2a51f0c6b96167b01f59b41aa2407066735cc39ee71ebd041d8ff59b75c60c15";
