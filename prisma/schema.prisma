@@ -1,0 +1,89 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id        Int      @id @default(autoincrement())
+  username  String   @unique
+  password  String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Client {
+  id        Int        @id @default(autoincrement())
+  name      String
+  totalDebt Float
+  payments  Payment[] // Adicionando relacionamento reverso
+  purchases Purchase[] // Adicionando relacionamento reverso
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+}
+
+model Machine {
+  id        Int            @id @default(autoincrement())
+  name      String
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+  readings  DailyReading[]
+}
+
+model DailyReading {
+  id        Int      @id @default(autoincrement())
+  date      String
+  value     Float
+  machineId Int
+  machine   Machine  @relation(fields: [machineId], references: [id])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Payment {
+  id        Int      @id @default(autoincrement())
+  amount    Float
+  date      String
+  clientId  Int
+  client    Client   @relation(fields: [clientId], references: [id])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Purchase {
+  id        Int      @id @default(autoincrement())
+  product   String
+  quantity  Int
+  total     Float
+  date      String
+  clientId  Int
+  client    Client   @relation(fields: [clientId], references: [id])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Product {
+  id        Int      @id @default(autoincrement())
+  name      String
+  quantity  Int
+  unit      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Balance {
+  id               Int      @id @default(autoincrement())
+  date             String
+  balance          Float
+  balancefim       Float?
+  lucro            Float?
+  cartao           Float?
+  dinheiro         Float?
+  cartaofimcaixa   Float?
+  dinheirofimcaixa Float?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}

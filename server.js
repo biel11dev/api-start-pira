@@ -1,34 +1,36 @@
-require("dotenv").config(); // Adicione esta linha no início do arquivo
+require("dotenv").config();
 const express = require("express");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
-const cors = require("cors"); // Importa o CORS
-const { Client, Machine, Purchase, Payment, DailyReading, Product, Balance, User } = require("./models");
+const cors = require("cors");
+const { PrismaClient } = require("@prisma/client");
+const prisma = new PrismaClient();
 const app = express();
 const port = 3000;
 
-app.use(cors()); // Aplica CORS em todas as rotas
+app.use(cors());
 app.use(express.json());
 
-const SECRET_KEY = process.env.SECRET_KEY || "2a51f0c6b96167b01f59b41aa2407066735cc39ee71ebd041d8ff59b75c60c15"; // Substitua por uma chave secreta segura
+const SECRET_KEY = process.env.SECRET_KEY || "2a51f0c6b96167b01f59b41aa2407066735cc39ee71ebd041d8ff59b75c60c15";
 
 // Rotas para Autenticação
 app.post("/register", async (req, res) => {
   const { username, password } = req.body;
   const hashedPassword = await bcrypt.hash(password, 10);
   try {
-    const newUser = await User.create({ username, password: hashedPassword });
+    const newUser = await prisma.user.create({
+      data: { username, password: hashedPassword },
+    });
     res.json(newUser);
   } catch (error) {
-    console.error("Erro ao registrar usuário:", error); // Adicione este console.error para verificar o erro
+    console.error("Erro ao registrar usuário:", error);
     res.status(400).json({ error: "Erro ao registrar usuário", details: error.message });
   }
 });
 
-// Rotas para login de usuário
 app.get("/login", async (req, res) => {
   const { username, password } = req.body;
-  const user = await User.findOne({ where: { username } });
+  const user = await prisma.user.findUnique({ where: { username } });
   if (!user) {
     return res.status(401).json({ error: "Usuário não encontrado" });
   }
@@ -54,38 +56,39 @@ const authenticate = (req, res, next) => {
   }
 };
 
-// Rotas protegidas
 app.get("/protected", authenticate, (req, res) => {
   res.json({ message: "Acesso autorizado" });
 });
 
 // Rotas para Clients
 app.get("/clients", async (req, res) => {
-  const clients = await Client.findAll();
+  const clients = await prisma.client.findMany();
   res.json(clients);
 });
 
 app.get("/clients/:id", async (req, res) => {
-  const client = await Client.findByPk(req.params.id, {
-    include: [Purchase, Payment],
+  const client = await prisma.client.findUnique({
+    where: { id: parseInt(req.params.id) },
+    include: { purchases: true, payments: true },
   });
   res.json(client);
 });
 
 app.post("/clients", async (req, res) => {
-  const newClient = await Client.create(req.body);
+  const newClient = await prisma.client.create({ data: req.body });
   res.json(newClient);
 });
 
 // Rotas para Machines
 app.get("/machines", async (req, res) => {
-  const machines = await Machine.findAll();
+  const machines = await prisma.machine.findMany();
   res.json(machines);
 });
 
 app.get("/machines/:id", async (req, res) => {
-  const machine = await Machine.findByPk(req.params.id, {
-    include: [DailyReading],
+  const machine = await prisma.machine.findUnique({
+    where: { id: parseInt(req.params.id) },
+    include: { readings: true },
   });
   if (machine) {
     res.json(machine);
@@ -95,78 +98,82 @@ app.get("/machines/:id", async (req, res) => {
 });
 
 app.post("/machines", async (req, res) => {
-  const newMachine = await Machine.create(req.body);
+  const newMachine = await prisma.machine.create({ data: req.body });
   res.json(newMachine);
 });
 
 // Rotas para Purchases
 app.post("/purchases", async (req, res) => {
-  const newPurchase = await Purchase.create(req.body);
+  const newPurchase = await prisma.purchase.create({ data: req.body });
   res.json(newPurchase);
 });
 
 // Rotas para Payments
 app.post("/payments", async (req, res) => {
-  const newPayment = await Payment.create(req.body);
+  const newPayment = await prisma.payment.create({ data: req.body });
   res.json(newPayment);
 });
 
 // Rotas para DailyReadings
 app.post("/daily-readings", async (req, res) => {
-  const { date, value, machineId } = req.body; // Inclui o campo entrada
-  const newDailyReading = await DailyReading.create({ date, value, machineId });
+  const { date, value, machineId } = req.body;
+  const newDailyReading = await prisma.dailyReading.create({
+    data: { date, value, machineId },
+  });
   res.json(newDailyReading);
 });
 
 app.delete("/daily-readings/:id", async (req, res) => {
-  const dailyReading = await DailyReading.findByPk(req.params.id);
-  await dailyReading.destroy();
+  const dailyReading = await prisma.dailyReading.delete({
+    where: { id: parseInt(req.params.id) },
+  });
   res.json({ message: "Leitura diária excluída com sucesso" });
 });
 
 // Rotas para Products
 app.get("/products", async (req, res) => {
-  const products = await Product.findAll();
+  const products = await prisma.product.findMany();
   res.json(products);
 });
 
 app.post("/products", async (req, res) => {
-  const newProduct = await Product.create(req.body);
+  const newProduct = await prisma.product.create({ data: req.body });
   res.json(newProduct);
 });
 
 app.delete("/products/:id", async (req, res) => {
-  const product = await Product.findByPk(req.params.id);
-  await product.destroy();
+  const product = await prisma.product.delete({
+    where: { id: parseInt(req.params.id) },
+  });
   res.json({ message: "Produto excluído com sucesso" });
 });
 
 // Rotas para Balances
 app.get("/balances", async (req, res) => {
-  const balances = await Balance.findAll();
+  const balances = await prisma.balance.findMany();
   res.json(balances);
 });
 
 app.post("/balances", async (req, res) => {
   const { date, balance, cartao, dinheiro } = req.body;
-  const newBalance = await Balance.create({ date, balance, cartao, dinheiro });
+  const newBalance = await prisma.balance.create({
+    data: { date, balance, cartao, dinheiro },
+  });
   res.json(newBalance);
 });
 
 app.put("/balances/:id", async (req, res) => {
-  const balance = await Balance.findByPk(req.params.id);
-  const { cartaofimcaixa, dinheirofimcaixa } = req.body;
-  balance.cartaofimcaixa = cartaofimcaixa;
-  balance.dinheirofimcaixa = dinheirofimcaixa;
-  balance.balancefim = cartaofimcaixa + dinheirofimcaixa;
-  balance.lucro = balance.balancefim - balance.balance;
-  await balance.save();
+  const balance = await prisma.balance.update({
+    where: { id: parseInt(req.params.id) },
+    data: req.body,
+  });
   res.json(balance);
 });
 
 app.delete("/balances/:id", async (req, res) => {
-  const balance = await Balance.findByPk(req.params.id);
-  await balance.destroy();
+  const balance = await prisma.balance.delete({
+    where: { id: parseInt(req.params.id) },
+  });
   res.json({ message: "Saldo excluído com sucesso" });
 });
 
