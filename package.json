@@ -13,7 +13,7 @@
   "dependencies": {
     "@prisma/client": "^6.4.0",
     "axios": "^1.7.9",
-    "bcrypt": "^5.1.1",
+    "bcryptjs": "^3.0.2",
     "chartjs-plugin-datalabels": "^2.2.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
