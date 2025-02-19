@@ -4,7 +4,7 @@
   "main": "index.js",
   "scripts": {
     "dev": "node server.js",
-    "start": "node server.js",
+    "start": "npx prisma generate && node server.js",
     "vercel-build": "npx prisma migrate deploy && npx prisma generate && npx prisma validate"
   },
   "keywords": [],
