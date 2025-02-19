@@ -1,27 +1,27 @@
 {
   "development": {
     "username": "neondb_owner",
-    "password": "npg_tWBxomy0n9wF",
+    "password": "npg_TCHBaUOu98nI",
     "database": "neondb",
-    "host": "ep-super-haze-a8gakaxd-pooler.eastus2.azure.neon.tech",
+    "host": "ep-autumn-wind-a5la71ac-pooler.us-east-2.aws.neon.tech",
     "port": 5432,
     "dialect": "postgres",
     "ssl": true
   },
   "test": {
     "username": "neondb_owner",
-    "password": "npg_tWBxomy0n9wF",
+    "password": "npg_TCHBaUOu98nI",
     "database": "neondb",
-    "host": "ep-super-haze-a8gakaxd-pooler.eastus2.azure.neon.tech",
+    "host": "ep-autumn-wind-a5la71ac-pooler.us-east-2.aws.neon.tech",
     "port": 5432,
     "dialect": "postgres",
     "ssl": true
   },
   "production": {
     "username": "neondb_owner",
-    "password": "npg_tWBxomy0n9wF",
+    "password": "npg_TCHBaUOu98nI",
     "database": "neondb",
-    "host": "ep-super-haze-a8gakaxd-pooler.eastus2.azure.neon.tech",
+    "host": "ep-autumn-wind-a5la71ac-pooler.us-east-2.aws.neon.tech",
     "port": 5432,
     "dialect": "postgres",
     "ssl": true
