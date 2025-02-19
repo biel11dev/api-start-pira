@@ -122,7 +122,9 @@ app.get("/daily-readings", async (req, res) => {
     const dailyReadings = await prisma.dailyReading.findMany({
       where: {
         machineId: parseInt(machineId),
-        date: date,
+        date: {
+          contains: date,
+        },
       },
     });
     res.json(dailyReadings);
