@@ -69,6 +69,10 @@ app.get("/clients/:id", async (req, res) => {
 
 app.post("/clients", async (req, res) => res.json(await prisma.client.create({ data: req.body })));
 
+app.put("/clients/:id", async (req, res) => {
+  res.json(await prisma.balance.update({ where: { id: parseInt(req.params.id) }, data: req.body }));
+});
+
 // ROTAS DE MÁQUINAS
 app.get("/machines", async (req, res) => res.json(await prisma.machine.findMany()));
 
