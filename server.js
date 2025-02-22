@@ -142,7 +142,7 @@ app.post("/products", async (req, res) => {
 });
 
 app.delete("/products/:id", async (req, res) => {
-  await prisma.product.delete({ where: { id: parseInt(req.params.id) } });
+  await prisma.product.delete({ where: { id: req.params.id } });
   res.json({ message: "Produto excluído com sucesso" });
 });
 
