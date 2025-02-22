@@ -83,8 +83,25 @@ app.get("/machines/:id", async (req, res) => {
 app.post("/machines", async (req, res) => res.json(await prisma.machine.create({ data: req.body })));
 
 // ROTAS DE COMPRAS (PURCHASES)
-app.post("/purchases", async (req, res) => res.json(await prisma.purchase.create({ data: req.body })));
+app.post("/purchases", async (req, res) => {
+  try {
+    const { product, quantity, total, date, clientId } = req.body;
 
+    // Converter quantity para um número inteiro
+    const parsedQuantity = parseInt(quantity, 10);
+    if (isNaN(parsedQuantity)) {
+      return res.status(400).json({ error: "Quantidade deve ser um número válido." });
+    }
+
+    const newPurchase = await prisma.purchase.create({
+      data: { product, quantity: parsedQuantity, total, date, clientId },
+    });
+
+    res.status(201).json(newPurchase);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao criar compra", details: error.message });
+  }
+});
 // ROTAS DE PAGAMENTOS
 app.post("/payments", async (req, res) => res.json(await prisma.payment.create({ data: req.body })));
 
