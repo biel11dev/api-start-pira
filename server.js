@@ -1,35 +1,44 @@
 require("dotenv").config();
 const express = require("express");
-const bcrypt = require("bcryptjs"); // Alterado para bcryptjs
+const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const cors = require("cors");
+const helmet = require("helmet");
+const morgan = require("morgan");
 const { PrismaClient } = require("@prisma/client");
+
 const prisma = new PrismaClient();
 const app = express();
 const port = 3000;
-const helmet = require("helmet");
-const morgan = require("morgan");
+const SECRET_KEY = process.env.SECRET_KEY || "2a51f0c6b96167b01f59b41aa2407066735cc39ee71ebd041d8ff59b75c60c15";
 
 app.use(helmet());
 app.use(cors());
 app.use(express.json());
 app.use(morgan("dev"));
 
-app.use(express.json());
+// Middleware de autenticação
+const authenticate = (req, res, next) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) return res.status(401).json({ error: "Token não fornecido" });
 
-const SECRET_KEY = process.env.SECRET_KEY || "2a51f0c6b96167b01f59b41aa2407066735cc39ee71ebd041d8ff59b75c60c15";
+  try {
+    const decoded = jwt.verify(token, SECRET_KEY);
+    req.userId = decoded.userId;
+    next();
+  } catch {
+    res.status(401).json({ error: "Token inválido" });
+  }
+};
 
-// Rotas para Autenticação
+// ROTAS DE AUTENTICAÇÃO
 app.post("/register", async (req, res) => {
   const { username, password } = req.body;
-  const hashedPassword = await bcrypt.hash(password, 10);
   try {
-    const newUser = await prisma.user.create({
-      data: { username, password: hashedPassword },
-    });
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const newUser = await prisma.user.create({ data: { username, password: hashedPassword } });
     res.json(newUser);
   } catch (error) {
-    console.error("Erro ao registrar usuário:", error);
     res.status(400).json({ error: "Erro ao registrar usuário", details: error.message });
   }
 });
@@ -37,176 +46,122 @@ app.post("/register", async (req, res) => {
 app.post("/login", async (req, res) => {
   const { username, password } = req.body;
   const user = await prisma.user.findUnique({ where: { username } });
-  if (!user) {
-    return res.status(401).json({ error: "Usuário não encontrado" });
+
+  if (!user || !(await bcrypt.compare(password, user.password))) {
+    return res.status(401).json({ error: "Usuário ou senha inválidos" });
   }
-  const isPasswordValid = await bcrypt.compare(password, user.password);
-  if (!isPasswordValid) {
-    return res.status(401).json({ error: "Senha inválida" });
-  }
+
   const token = jwt.sign({ userId: user.id }, SECRET_KEY, { expiresIn: "1h" });
   res.json({ token });
 });
 
-const authenticate = (req, res, next) => {
-  const token = req.headers.authorization?.split(" ")[1];
-  if (!token) {
-    return res.status(401).json({ error: "Token não fornecido" });
-  }
-  try {
-    const decoded = jwt.verify(token, SECRET_KEY);
-    req.userId = decoded.userId;
-    next();
-  } catch (error) {
-    res.status(401).json({ error: "Token inválido" });
-  }
-};
-
-app.get("/protected", authenticate, (req, res) => {
-  res.json({ message: "Acesso autorizado" });
-});
-
-// Rotas para Clients
-app.get("/clients", async (req, res) => {
-  const clients = await prisma.client.findMany();
-  res.json(clients);
-});
+// ROTAS DE CLIENTES
+app.get("/clients", async (req, res) => res.json(await prisma.client.findMany()));
 
 app.get("/clients/:id", async (req, res) => {
   const client = await prisma.client.findUnique({
     where: { id: parseInt(req.params.id) },
     include: { purchases: true, payments: true },
   });
-  res.json(client);
+  res.json(client || { error: "Cliente não encontrado" });
 });
 
-app.post("/clients", async (req, res) => {
-  const newClient = await prisma.client.create({ data: req.body });
-  res.json(newClient);
-});
+app.post("/clients", async (req, res) => res.json(await prisma.client.create({ data: req.body })));
 
-// Rotas para Machines
-app.get("/machines", async (req, res) => {
-  const machines = await prisma.machine.findMany();
-  res.json(machines);
-});
+// ROTAS DE MÁQUINAS
+app.get("/machines", async (req, res) => res.json(await prisma.machine.findMany()));
 
 app.get("/machines/:id", async (req, res) => {
   const machine = await prisma.machine.findUnique({
     where: { id: parseInt(req.params.id) },
     include: { readings: true },
   });
-  if (machine) {
-    res.json(machine);
-  } else {
-    res.status(404).json({ message: "Máquina não encontrada" });
-  }
+  res.json(machine || { error: "Máquina não encontrada" });
 });
 
-app.post("/machines", async (req, res) => {
-  const newMachine = await prisma.machine.create({ data: req.body });
-  res.json(newMachine);
-});
+app.post("/machines", async (req, res) => res.json(await prisma.machine.create({ data: req.body })));
 
-// Rotas para Purchases
-app.post("/purchases", async (req, res) => {
-  const newPurchase = await prisma.purchase.create({ data: req.body });
-  res.json(newPurchase);
-});
+// ROTAS DE COMPRAS (PURCHASES)
+app.post("/purchases", async (req, res) => res.json(await prisma.purchase.create({ data: req.body })));
 
-// Rotas para Payments
-app.post("/payments", async (req, res) => {
-  const newPayment = await prisma.payment.create({ data: req.body });
-  res.json(newPayment);
-});
+// ROTAS DE PAGAMENTOS
+app.post("/payments", async (req, res) => res.json(await prisma.payment.create({ data: req.body })));
 
-// Rotas para DailyReadings
-
+// ROTAS DE LEITURAS DIÁRIAS
 app.get("/daily-readings", async (req, res) => {
   const { machineId, date } = req.query;
-  try {
-    const dailyReadings = await prisma.dailyReading.findMany({
-      where: {
-        machineId: parseInt(machineId),
-        date: {
-          contains: date,
-        },
-      },
-    });
-    res.json(dailyReadings);
-  } catch (error) {
-    console.error("Erro ao buscar leituras diárias:", error);
-    res.status(500).json({ message: "Erro ao buscar leituras diárias" });
-  }
+  const dailyReadings = await prisma.dailyReading.findMany({
+    where: {
+      machineId: parseInt(machineId),
+      date: { contains: date },
+    },
+  });
+  res.json(dailyReadings);
 });
 
 app.post("/daily-readings", async (req, res) => {
   const { date, value, machineId } = req.body;
-  const formattedDate = date.split("T")[0]; // Formatar a data para "dd-MM-yyyy"
-  const newDailyReading = await prisma.dailyReading.create({
-    data: { date: formattedDate, value, machineId },
-  });
-  res.json(newDailyReading);
+  const formattedDate = date.split("T")[0]; // Formata a data para "dd-MM-yyyy"
+  res.json(await prisma.dailyReading.create({ data: { date: formattedDate, value, machineId } }));
 });
 
 app.delete("/daily-readings/:id", async (req, res) => {
-  const dailyReading = await prisma.dailyReading.delete({
-    where: { id: parseInt(req.params.id) },
-  });
+  await prisma.dailyReading.delete({ where: { id: parseInt(req.params.id) } });
   res.json({ message: "Leitura diária excluída com sucesso" });
 });
 
-// Rotas para Products
-app.get("/products", async (req, res) => {
-  const products = await prisma.product.findMany();
-  res.json(products);
-});
+// ROTAS DE PRODUTOS (CORREÇÃO DO ERRO `quantity`)
+app.get("/products", async (req, res) => res.json(await prisma.product.findMany()));
 
 app.post("/products", async (req, res) => {
-  const newProduct = await prisma.product.create({ data: req.body });
-  res.json(newProduct);
+  try {
+    const { name, quantity, unit } = req.body;
+
+    if (!name || !quantity || !unit) {
+      return res.status(400).json({ error: "Todos os campos são obrigatórios." });
+    }
+
+    const parsedQuantity = parseInt(quantity, 10);
+    if (isNaN(parsedQuantity)) {
+      return res.status(400).json({ error: "Quantidade deve ser um número válido." });
+    }
+
+    const newProduct = await prisma.product.create({
+      data: { name, quantity: parsedQuantity, unit },
+    });
+
+    res.status(201).json(newProduct);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao criar produto", details: error.message });
+  }
 });
 
 app.delete("/products/:id", async (req, res) => {
-  const product = await prisma.product.delete({
-    where: { id: parseInt(req.params.id) },
-  });
+  await prisma.product.delete({ where: { id: parseInt(req.params.id) } });
   res.json({ message: "Produto excluído com sucesso" });
 });
 
-// Rotas para Balances
-app.get("/balances", async (req, res) => {
-  const balances = await prisma.balance.findMany();
-  res.json(balances);
-});
+// ROTAS DE BALANÇO
+app.get("/balances", async (req, res) => res.json(await prisma.balance.findMany()));
 
 app.post("/balances", async (req, res) => {
   const { date, balance, cartao, dinheiro } = req.body;
-  const newBalance = await prisma.balance.create({
-    data: { date, balance, cartao, dinheiro },
-  });
-  res.json(newBalance);
+  res.json(await prisma.balance.create({ data: { date, balance, cartao, dinheiro } }));
 });
 
 app.put("/balances/:id", async (req, res) => {
-  const balance = await prisma.balance.update({
-    where: { id: parseInt(req.params.id) },
-    data: req.body,
-  });
-  res.json(balance);
+  res.json(await prisma.balance.update({ where: { id: parseInt(req.params.id) }, data: req.body }));
 });
 
 app.delete("/balances/:id", async (req, res) => {
-  const balance = await prisma.balance.delete({
-    where: { id: parseInt(req.params.id) },
-  });
+  await prisma.balance.delete({ where: { id: parseInt(req.params.id) } });
   res.json({ message: "Saldo excluído com sucesso" });
 });
 
-// Middleware Global de Tratamento de Erros
+// MIDDLEWARE GLOBAL DE ERRO
 app.use((err, req, res, next) => {
   console.error("Erro:", err);
-  res.status(500).json({ error: "Erro interno do servidor" });
+  res.status(500).json({ error: "Erro interno do servidor", details: err.message });
 });
 
 app.listen(port, () => {
