@@ -6,6 +6,7 @@ const cors = require("cors");
 const helmet = require("helmet");
 const morgan = require("morgan");
 const { PrismaClient } = require("@prisma/client");
+const { format, parse } = require("date-fns");
 
 const prisma = new PrismaClient();
 const app = express();
@@ -88,15 +89,26 @@ app.post("/purchases", async (req, res) => res.json(await prisma.purchase.create
 app.post("/payments", async (req, res) => res.json(await prisma.payment.create({ data: req.body })));
 
 // ROTAS DE LEITURAS DIÁRIAS
+
 app.get("/daily-readings", async (req, res) => {
   const { machineId, date } = req.query;
-  const dailyReadings = await prisma.dailyReading.findMany({
-    where: {
-      machineId: parseInt(machineId),
-      date: { contains: date },
-    },
-  });
-  res.json(dailyReadings);
+
+  // Parse a data de entrada e formate-a como "dd-MM-yyyy"
+  const parsedDate = parse(date, "yyyy-MM-dd", new Date());
+  const formattedDate = format(parsedDate, "dd-MM-yyyy");
+
+  try {
+    const dailyReadings = await prisma.dailyReading.findMany({
+      where: {
+        machineId: parseInt(machineId),
+        date: formattedDate,
+      },
+    });
+    res.json(dailyReadings);
+  } catch (error) {
+    console.error("Erro ao buscar leituras diárias:", error);
+    res.status(500).json({ message: "Erro ao buscar leituras diárias" });
+  }
 });
 
 app.post("/daily-readings", async (req, res) => {
