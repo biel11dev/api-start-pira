@@ -74,7 +74,6 @@ CREATE TABLE "Product" (
     "name" TEXT NOT NULL,
     "quantity" INTEGER NOT NULL,
     "unit" TEXT NOT NULL,
-    "value" TEXT NOT NULL,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
