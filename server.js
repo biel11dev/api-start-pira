@@ -115,7 +115,7 @@ app.get("/products", async (req, res) => res.json(await prisma.product.findMany(
 
 app.post("/products", async (req, res) => {
   try {
-    const { name, quantity, unit } = req.body;
+    const { name, quantity, unit, value } = req.body;
 
     if (!name || !quantity || !unit) {
       return res.status(400).json({ error: "Todos os campos são obrigatórios." });
@@ -126,8 +126,13 @@ app.post("/products", async (req, res) => {
       return res.status(400).json({ error: "Quantidade deve ser um número válido." });
     }
 
+    const parsedValue = parseInt(value, 10);
+    if (isNaN(parsedValue)) {
+      return res.status(400).json({ error: "Valor deve ser um número válido." });
+    }
+
     const newProduct = await prisma.product.create({
-      data: { name, quantity: parsedQuantity, unit },
+      data: { name, quantity: parsedQuantity, unit, value: parsedValue },
     });
 
     res.status(201).json(newProduct);
