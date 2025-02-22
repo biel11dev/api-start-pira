@@ -11,7 +11,7 @@ const helmet = require("helmet");
 const morgan = require("morgan");
 
 app.use(helmet());
-app.use(cors({ origin: ["*"] }));
+app.use(cors());
 app.use(express.json());
 app.use(morgan("dev"));
 
