@@ -142,8 +142,17 @@ app.post("/products", async (req, res) => {
 });
 
 app.delete("/products/:id", async (req, res) => {
-  await prisma.product.delete({ where: { id: req.params.id } });
-  res.json({ message: "Produto excluído com sucesso" });
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) {
+      return res.status(400).json({ error: "ID inválido" });
+    }
+
+    await prisma.product.delete({ where: { id } });
+    res.json({ message: "Produto excluído com sucesso" });
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao excluir produto", details: error.message });
+  }
 });
 
 // ROTAS DE BALANÇO
