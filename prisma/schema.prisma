@@ -70,6 +70,7 @@ model Product {
   name      String
   quantity  Int
   unit      String
+  value     Int
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
