@@ -120,8 +120,6 @@ app.get("/daily-readings", async (req, res) => {
 
   if (date) {
     // Parse a data de entrada e formate-a como "dd-MM-yyyy"
-    const parsedDate = parse(date, "yyyy-MM-dd", new Date());
-    const formattedDate = format(parsedDate, "dd-MM-yyyy");
     whereClause.date = { contains: formattedDate };
   }
 
