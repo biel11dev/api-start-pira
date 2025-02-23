@@ -116,13 +116,12 @@ app.get("/daily-readings", async (req, res) => {
 
   // Parse a data de entrada e formate-a como "dd-MM-yyyy"
   const parsedDate = parse(date, "yyyy-MM-dd", new Date());
-  const formattedDate = format(parsedDate, "dd-MM-yyyy");
 
   try {
     const dailyReadings = await prisma.dailyReading.findMany({
       where: {
         machineId: parseInt(machineId),
-        date: formattedDate,
+        date: parsedDate,
       },
     });
     res.json(dailyReadings);
