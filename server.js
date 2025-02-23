@@ -114,16 +114,20 @@ app.post("/payments", async (req, res) => res.json(await prisma.payment.create({
 app.get("/daily-readings", async (req, res) => {
   const { machineId, date } = req.query;
 
-  // Parse a data de entrada e formate-a como "dd-MM-yyyy"
-  const parsedDate = parse(date, "yyyy-MM-dd", new Date());
-  const formattedDate = format(parsedDate, "dd-MM-yyyy");
+  let whereClause = {
+    machineId: parseInt(machineId),
+  };
+
+  if (date) {
+    // Parse a data de entrada e formate-a como "dd-MM-yyyy"
+    const parsedDate = parse(date, "yyyy-MM-dd", new Date());
+    const formattedDate = format(parsedDate, "dd-MM-yyyy");
+    whereClause.date = { contains: formattedDate };
+  }
 
   try {
     const dailyReadings = await prisma.dailyReading.findMany({
-      where: {
-        machineId: parseInt(machineId),
-        date: { contains: formattedDate },
-      },
+      where: whereClause,
     });
     res.json(dailyReadings);
   } catch (error) {
