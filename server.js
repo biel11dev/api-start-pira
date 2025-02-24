@@ -428,8 +428,9 @@ app.get("/despesas/:id", async (req, res) => {
 app.post("/despesas", async (req, res) => {
   try {
     const { nomeDespesa, valorDespesa, descDespesa, date, DespesaFixa } = req.body;
+    console.log("Dados recebidos:", req.body); // Log dos dados recebidos
 
-    const data = { nomeDespesa, date, DespesaFixa };
+    const data = { nomeDespesa, date: new Date(date), DespesaFixa };
     if (valorDespesa !== undefined) data.valorDespesa = valorDespesa;
     if (descDespesa !== undefined) data.descDespesa = descDespesa;
 

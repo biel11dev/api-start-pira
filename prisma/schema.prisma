@@ -93,7 +93,7 @@ model Despesa {
   id           Int      @id @default(autoincrement())
   nomeDespesa  String
   valorDespesa Float?
-  descDespesa  String
+  descDespesa  String?
   date         DateTime
   DespesaFixa  Boolean
   createdAt    DateTime @default(now())
