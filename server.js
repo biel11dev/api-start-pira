@@ -257,8 +257,7 @@ app.get("/daily-readings/:id", async (req, res) => {
 
 app.post("/daily-readings", async (req, res) => {
   const { date, value, machineId } = req.body;
-  const formattedDate = format(date, "dd-MM-yyyy"); // Formata a data para "dd-MM-yyyy"
-  res.json(await prisma.dailyReading.create({ data: { date: formattedDate, value, machineId } }));
+  res.json(await prisma.dailyReading.create({ data: { date: date, value, machineId } }));
 });
 
 app.put("/daily-readings/:id", async (req, res) => {
