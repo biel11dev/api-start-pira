@@ -405,6 +405,66 @@ app.delete("/balances/:id", async (req, res) => {
   }
 });
 
+// ROTAS DE DESPESAS
+app.get("/despesas", async (req, res) => {
+  try {
+    const despesas = await prisma.despesa.findMany();
+    res.json(despesas);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao buscar despesas", details: error.message });
+  }
+});
+
+app.get("/despesas/:id", async (req, res) => {
+  try {
+    const despesa = await prisma.despesa.findUnique({
+      where: { id: parseInt(req.params.id) },
+    });
+    res.json(despesa || { error: "Despesa não encontrada" });
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao buscar despesa", details: error.message });
+  }
+});
+
+app.post("/despesas", async (req, res) => {
+  try {
+    const { nomeDespesa, valorDespesa, descDespesa, date, DespesaFixa } = req.body;
+    const newDespesa = await prisma.despesa.create({
+      data: { nomeDespesa, valorDespesa, descDespesa, date: new Date(date), DespesaFixa },
+    });
+    res.status(201).json(newDespesa);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao criar despesa", details: error.message });
+  }
+});
+
+app.put("/despesas/:id", async (req, res) => {
+  try {
+    const { nomeDespesa, valorDespesa, descDespesa, date, DespesaFixa } = req.body;
+    const updatedDespesa = await prisma.despesa.update({
+      where: { id: parseInt(req.params.id) },
+      data: { nomeDespesa, valorDespesa, descDespesa, date: new Date(date), DespesaFixa },
+    });
+    res.json(updatedDespesa);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao atualizar despesa", details: error.message });
+  }
+});
+
+app.delete("/despesas/:id", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) {
+      return res.status(400).json({ error: "ID inválido" });
+    }
+
+    await prisma.despesa.delete({ where: { id } });
+    res.json({ message: "Despesa excluída com sucesso" });
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao excluir despesa", details: error.message });
+  }
+});
+
 // MIDDLEWARE GLOBAL DE ERRO
 app.use((err, req, res, next) => {
   console.error("Erro:", err);

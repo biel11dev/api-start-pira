@@ -88,3 +88,14 @@ model Balance {
   createdAt        DateTime @default(now())
   updatedAt        DateTime? @updatedAt
 }
+
+model Despesa {
+  id           Int      @id @default(autoincrement())
+  nomeDespesa  String
+  valorDespesa Float
+  descDespesa  String
+  date         DateTime
+  DespesaFixa  Boolean
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime? @updatedAt
+}
