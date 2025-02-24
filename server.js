@@ -429,7 +429,7 @@ app.post("/despesas", async (req, res) => {
   try {
     const { nomeDespesa, valorDespesa, descDespesa, date, DespesaFixa } = req.body;
 
-    const data = { nomeDespesa, date: new Date(date), DespesaFixa };
+    const data = { nomeDespesa, date: date, DespesaFixa };
     if (valorDespesa !== undefined) data.valorDespesa = valorDespesa;
     if (descDespesa !== undefined) data.descDespesa = descDespesa;
 
