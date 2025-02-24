@@ -5,7 +5,7 @@ ALTER TABLE "Balance" ALTER COLUMN "updatedAt" DROP NOT NULL;
 CREATE TABLE "Despesa" (
     "id" SERIAL NOT NULL,
     "nomeDespesa" TEXT NOT NULL,
-    "valorDespesa" DOUBLE PRECISION NOT NULL,
+    "valorDespesa" DOUBLE PRECISION,
     "descDespesa" TEXT,
     "date" TIMESTAMP(3) NOT NULL,
     "DespesaFixa" BOOLEAN NOT NULL,

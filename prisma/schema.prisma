@@ -92,7 +92,7 @@ model Balance {
 model Despesa {
   id           Int      @id @default(autoincrement())
   nomeDespesa  String
-  valorDespesa Float
+  valorDespesa Float?
   descDespesa  String
   date         DateTime
   DespesaFixa  Boolean

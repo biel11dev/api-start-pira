@@ -428,8 +428,13 @@ app.get("/despesas/:id", async (req, res) => {
 app.post("/despesas", async (req, res) => {
   try {
     const { nomeDespesa, valorDespesa, descDespesa, date, DespesaFixa } = req.body;
+
+    const data = { nomeDespesa, date: new Date(date), DespesaFixa };
+    if (valorDespesa !== undefined) data.valorDespesa = valorDespesa;
+    if (descDespesa !== undefined) data.descDespesa = descDespesa;
+
     const newDespesa = await prisma.despesa.create({
-      data: { nomeDespesa, valorDespesa, descDespesa, date: new Date(date), DespesaFixa },
+      data,
     });
     res.status(201).json(newDespesa);
   } catch (error) {
@@ -439,10 +444,10 @@ app.post("/despesas", async (req, res) => {
 
 app.put("/despesas/:id", async (req, res) => {
   try {
-    const { nomeDespesa, valorDespesa, descDespesa, date, DespesaFixa } = req.body;
+    const { valorDespesa, descDespesa } = req.body;
     const updatedDespesa = await prisma.despesa.update({
       where: { id: parseInt(req.params.id) },
-      data: { nomeDespesa, valorDespesa, descDespesa, date: new Date(date), DespesaFixa },
+      data: { valorDespesa, descDespesa },
     });
     res.json(updatedDespesa);
   } catch (error) {
