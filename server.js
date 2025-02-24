@@ -430,6 +430,7 @@ app.post("/despesas", async (req, res) => {
     const { nomeDespesa, valorDespesa, descDespesa, date, DespesaFixa } = req.body;
     console.log("Dados recebidos:", req.body); // Log dos dados recebidos
 
+    // Construir dinamicamente o objeto data
     const data = { nomeDespesa, date: new Date(date), DespesaFixa };
     if (valorDespesa !== undefined) data.valorDespesa = valorDespesa;
     if (descDespesa !== undefined) data.descDespesa = descDespesa;
