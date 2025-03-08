@@ -1,29 +1,26 @@
 {
   "development": {
-    "username": "neondb_owner",
-    "password": "npg_TCHBaUOu98nI",
-    "database": "neondb",
-    "host": "ep-autumn-wind-a5la71ac-pooler.us-east-2.aws.neon.tech",
+    "username": "start_pira_rique",
+    "password": "661370o",
+    "database": "PRD_START_PIRA",
+    "host": "189.33.65.5",
     "port": 5432,
-    "dialect": "postgres",
-    "ssl": true
+    "dialect": "postgres"
   },
   "test": {
-    "username": "neondb_owner",
-    "password": "npg_TCHBaUOu98nI",
-    "database": "neondb",
-    "host": "ep-autumn-wind-a5la71ac-pooler.us-east-2.aws.neon.tech",
+    "username": "start_pira_rique",
+    "password": "661370o",
+    "database": "PRD_START_PIRA",
+    "host": "189.33.65.5",
     "port": 5432,
-    "dialect": "postgres",
-    "ssl": true
+    "dialect": "postgres"
   },
   "production": {
-    "username": "neondb_owner",
-    "password": "npg_TCHBaUOu98nI",
-    "database": "neondb",
-    "host": "ep-autumn-wind-a5la71ac-pooler.us-east-2.aws.neon.tech",
+    "username": "start_pira_rique",
+    "password": "661370o",
+    "database": "PRD_START_PIRA",
+    "host": "189.33.65.5",
     "port": 5432,
-    "dialect": "postgres",
-    "ssl": true
+    "dialect": "postgres"
   }
 }

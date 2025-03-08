@@ -302,7 +302,7 @@ app.get("/products/:id", async (req, res) => {
 
 app.post("/products", async (req, res) => {
   try {
-    const { name, quantity, unit, value } = req.body;
+    const { name, quantity, unit, value, valuecusto } = req.body;
 
     if (!name || !quantity || !unit) {
       return res.status(400).json({ error: "Todos os campos são obrigatórios." });
@@ -318,8 +318,13 @@ app.post("/products", async (req, res) => {
       return res.status(400).json({ error: "Valor deve ser um número válido." });
     }
 
+    const parsedValueCusto = parseInt(value, 10);
+    if (isNaN(parsedValue)) {
+      return res.status(400).json({ error: "Custo deve ser um número válido." });
+    }
+
     const newProduct = await prisma.product.create({
-      data: { name, quantity: parsedQuantity, unit, value: parsedValue },
+      data: { name, quantity: parsedQuantity, unit, value: parsedValue, valuecusto: parsedValueCusto },
     });
 
     res.status(201).json(newProduct);
@@ -330,7 +335,7 @@ app.post("/products", async (req, res) => {
 
 app.put("/products/:id", async (req, res) => {
   try {
-    const { name, quantity, unit, value } = req.body;
+    const { name, quantity, unit, value, valuecusto } = req.body;
 
     if (!name || !quantity || !unit) {
       return res.status(400).json({ error: "Todos os campos são obrigatórios." });
@@ -346,9 +351,14 @@ app.put("/products/:id", async (req, res) => {
       return res.status(400).json({ error: "Valor deve ser um número válido." });
     }
 
+    const parsedValueCusto = parseInt(value, 10);
+    if (isNaN(parsedValue)) {
+      return res.status(400).json({ error: "Custo deve ser um número válido." });
+    }
+
     const updatedProduct = await prisma.product.update({
       where: { id: parseInt(req.params.id) },
-      data: { name, quantity: parsedQuantity, unit, value: parsedValue },
+      data: { name, quantity: parsedQuantity, unit, value: parsedValue, valuecusto: parsedValueCusto },
     });
 
     res.json(updatedProduct);

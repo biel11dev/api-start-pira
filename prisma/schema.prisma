@@ -1,101 +1,87 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
-generator client {
-  provider = "prisma-client-js"
-}
-
-model User {
-  id        Int      @id @default(autoincrement())
-  username  String   @unique
-  password  String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-}
-
-model Client {
-  id        Int        @id @default(autoincrement())
-  name      String
-  totalDebt Float
-  payments  Payment[] // Adicionando relacionamento reverso
-  purchases Purchase[] // Adicionando relacionamento reverso
-  createdAt DateTime   @default(now())
-  updatedAt DateTime   @updatedAt
-}
-
-model Machine {
-  id        Int            @id @default(autoincrement())
-  name      String
-  createdAt DateTime       @default(now())
-  updatedAt DateTime       @updatedAt
-  readings  DailyReading[]
-}
-
-model DailyReading {
-  id        Int      @id @default(autoincrement())
-  date      String
-  value     Float
-  machineId Int
-  machine   Machine  @relation(fields: [machineId], references: [id])
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-}
-
-model Payment {
-  id        Int      @id @default(autoincrement())
-  amount    Float
-  date      String
-  clientId  Int
-  client    Client   @relation(fields: [clientId], references: [id])
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-}
-
-model Purchase {
-  id        Int      @id @default(autoincrement())
-  product   String
-  quantity  Int
-  total     Float
-  date      String
-  clientId  Int
-  client    Client   @relation(fields: [clientId], references: [id])
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-}
-
-model Product {
-  id        Int      @id @default(autoincrement())
-  name      String
-  quantity  Int
-  unit      String
-  value     Int
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-}
-
-model Balance {
-  id               Int      @id @default(autoincrement())
-  date             String
-  balance          Float
+model Balances {
+  id               Int       @id @default(autoincrement())
+  date             String?   @db.VarChar(255)
+  balance          Float?
+  createdAt        DateTime  @db.Timestamptz(6)
+  updatedAt        DateTime? @db.Timestamptz(6)
   balancefim       Float?
   lucro            Float?
   cartao           Float?
   dinheiro         Float?
   cartaofimcaixa   Float?
   dinheirofimcaixa Float?
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime? @updatedAt
 }
 
-model Despesa {
-  id           Int      @id @default(autoincrement())
-  nomeDespesa  String
-  valorDespesa Float?
-  descDespesa  String?
-  date         DateTime
-  DespesaFixa  Boolean
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime? @updatedAt
+model Clients {
+  id        Int      @id @default(autoincrement())
+  name      String?  @db.VarChar(255)
+  totalDebt Float?
+  createdAt DateTime @db.Timestamptz(6)
+  updatedAt DateTime @db.Timestamptz(6)
+}
+
+model DailyReadings {
+  id        Int       @id @default(autoincrement())
+  date      String?   @db.VarChar(255)
+  value     Float?
+  machineId Int?
+  createdAt DateTime  @db.Timestamptz(6)
+  updatedAt DateTime? @db.Timestamptz(6)
+}
+
+model Machines {
+  id        Int       @id @default(autoincrement())
+  name      String?   @db.VarChar(255)
+  createdAt DateTime  @db.Timestamptz(6)
+  updatedAt DateTime? @db.Timestamptz(6)
+}
+
+model Payments {
+  id        Int      @id @default(autoincrement())
+  amount    Float?
+  date      String?  @db.VarChar(255)
+  clientId  Int?
+  createdAt DateTime @db.Timestamptz(6)
+  updatedAt DateTime @db.Timestamptz(6)
+}
+
+model Products {
+  id        Int      @id @default(autoincrement())
+  name      String?  @db.VarChar(255)
+  quantity  Int?
+  unit      String?  @db.VarChar(255)
+  createdAt DateTime @db.Timestamptz(6)
+  updatedAt DateTime @db.Timestamptz(6)
+}
+
+model Purchases {
+  id        Int      @id @default(autoincrement())
+  product   String?  @db.VarChar(255)
+  quantity  Int?
+  total     Float?
+  date      String?  @db.VarChar(255)
+  clientId  Int?
+  createdAt DateTime @db.Timestamptz(6)
+  updatedAt DateTime @db.Timestamptz(6)
+}
+
+model SequelizeMeta {
+  name String @id @db.VarChar(255)
+}
+
+model Users {
+  id        Int      @id @default(autoincrement())
+  username  String   @unique @db.VarChar(255)
+  password  String   @db.VarChar(255)
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @db.Timestamptz(6)
 }
