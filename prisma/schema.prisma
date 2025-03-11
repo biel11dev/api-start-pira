@@ -7,81 +7,95 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model Balances {
+model Balance {
   id               Int       @id @default(autoincrement())
-  date             String?   @db.VarChar(255)
-  balance          Float?
-  createdAt        DateTime  @db.Timestamptz(6)
-  updatedAt        DateTime? @db.Timestamptz(6)
+  date             String
+  balance          Float
   balancefim       Float?
   lucro            Float?
   cartao           Float?
   dinheiro         Float?
   cartaofimcaixa   Float?
   dinheirofimcaixa Float?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime?
 }
 
-model Clients {
+model Client {
+  id        Int        @id @default(autoincrement())
+  name      String
+  totalDebt Float
+  createdAt DateTime   @default(now())
+  updatedAt DateTime
+  Payment   Payment[]
+  Purchase  Purchase[]
+}
+
+model DailyReading {
   id        Int      @id @default(autoincrement())
-  name      String?  @db.VarChar(255)
-  totalDebt Float?
-  createdAt DateTime @db.Timestamptz(6)
-  updatedAt DateTime @db.Timestamptz(6)
+  date      String
+  value     Float
+  machineId Int
+  createdAt DateTime @default(now())
+  updatedAt DateTime
+  Machine   Machine  @relation(fields: [machineId], references: [id])
 }
 
-model DailyReadings {
-  id        Int       @id @default(autoincrement())
-  date      String?   @db.VarChar(255)
-  value     Float?
-  machineId Int?
-  createdAt DateTime  @db.Timestamptz(6)
-  updatedAt DateTime? @db.Timestamptz(6)
+model Despesa {
+  id           Int      @id @default(autoincrement())
+  nomeDespesa  String
+  valorDespesa Float?
+  descDespesa  String?
+  date         DateTime
+  DespesaFixa  Boolean
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime
 }
 
-model Machines {
-  id        Int       @id @default(autoincrement())
-  name      String?   @db.VarChar(255)
-  createdAt DateTime  @db.Timestamptz(6)
-  updatedAt DateTime? @db.Timestamptz(6)
+model Machine {
+  id           Int            @id @default(autoincrement())
+  name         String
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime
+  DailyReading DailyReading[]
 }
 
-model Payments {
+model Payment {
   id        Int      @id @default(autoincrement())
-  amount    Float?
-  date      String?  @db.VarChar(255)
-  clientId  Int?
-  createdAt DateTime @db.Timestamptz(6)
-  updatedAt DateTime @db.Timestamptz(6)
+  amount    Float
+  date      String
+  clientId  Int
+  createdAt DateTime @default(now())
+  updatedAt DateTime
+  Client    Client   @relation(fields: [clientId], references: [id])
 }
 
-model Products {
+model Product {
   id        Int      @id @default(autoincrement())
-  name      String?  @db.VarChar(255)
-  quantity  Int?
-  unit      String?  @db.VarChar(255)
-  createdAt DateTime @db.Timestamptz(6)
-  updatedAt DateTime @db.Timestamptz(6)
+  name      String
+  quantity  Int
+  unit      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime
+  value     Int
 }
 
-model Purchases {
+model Purchase {
   id        Int      @id @default(autoincrement())
-  product   String?  @db.VarChar(255)
-  quantity  Int?
-  total     Float?
-  date      String?  @db.VarChar(255)
-  clientId  Int?
-  createdAt DateTime @db.Timestamptz(6)
-  updatedAt DateTime @db.Timestamptz(6)
+  product   String
+  quantity  Int
+  total     Float
+  date      String
+  clientId  Int
+  createdAt DateTime @default(now())
+  updatedAt DateTime
+  Client    Client   @relation(fields: [clientId], references: [id])
 }
 
-model SequelizeMeta {
-  name String @id @db.VarChar(255)
-}
-
-model Users {
+model User {
   id        Int      @id @default(autoincrement())
-  username  String   @unique @db.VarChar(255)
-  password  String   @db.VarChar(255)
-  createdAt DateTime @default(now()) @db.Timestamptz(6)
-  updatedAt DateTime @default(now()) @db.Timestamptz(6)
+  username  String   @unique
+  password  String
+  createdAt DateTime @default(now())
+  updatedAt DateTime
 }
