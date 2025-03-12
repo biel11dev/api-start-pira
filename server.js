@@ -318,8 +318,8 @@ app.post("/products", async (req, res) => {
       return res.status(400).json({ error: "Valor deve ser um número válido." });
     }
 
-    const parsedValueCusto = parseInt(value, 10);
-    if (isNaN(parsedValue)) {
+    const parsedValueCusto = parseInt(valuecusto, 10);
+    if (isNaN(parsedValueCusto)) {
       return res.status(400).json({ error: "Custo deve ser um número válido." });
     }
 
@@ -441,7 +441,9 @@ app.post("/despesas", async (req, res) => {
     console.log("Dados recebidos:", req.body); // Log dos dados recebidos
 
     // Construir dinamicamente o objeto data
-    const data = { nomeDespesa, date: new Date(date), DespesaFixa };
+    const parsedDate = new Date(date.replace(" ", "T"));
+
+    const data = { nomeDespesa, date: parsedDate, DespesaFixa };
     if (valorDespesa !== undefined) data.valorDespesa = valorDespesa;
     if (descDespesa !== undefined) data.descDespesa = descDespesa;
 
