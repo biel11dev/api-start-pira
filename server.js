@@ -210,9 +210,11 @@ app.put("/payments/:id", async (req, res) => {
   try {
     const { amount, date, clientId } = req.body;
 
+    const formattedDate = new Date(date).toISOString();
+
     const updatedPayment = await prisma.payment.update({
       where: { id: parseInt(req.params.id) },
-      data: { amount, date, clientId },
+      data: { amount, date: formattedDate, clientId },
     });
 
     res.json(updatedPayment);
