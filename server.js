@@ -351,8 +351,8 @@ app.put("/products/:id", async (req, res) => {
       return res.status(400).json({ error: "Valor deve ser um número válido." });
     }
 
-    const parsedValueCusto = parseInt(value, 10);
-    if (isNaN(parsedValue)) {
+    const parsedValueCusto = parseInt(valuecusto, 10);
+    if (isNaN(parsedValueCusto)) {
       return res.status(400).json({ error: "Custo deve ser um número válido." });
     }
 
