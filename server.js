@@ -61,11 +61,21 @@ app.post("/login", async (req, res) => {
 app.get("/clients", async (req, res) => res.json(await prisma.client.findMany()));
 
 app.get("/clients/:id", async (req, res) => {
-  const client = await prisma.client.findUnique({
-    where: { id: parseInt(req.params.id) },
-    include: { purchases: true, payments: true },
-  });
-  res.json(client || { error: "Cliente não encontrado" });
+  try {
+    const client = await prisma.client.findUnique({
+      where: { id: parseInt(req.params.id) },
+      include: {
+        purchases: true,
+        payments: true,
+      },
+    });
+    if (!client) {
+      return res.status(404).json({ error: "Cliente não encontrado" });
+    }
+    res.json(client);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao buscar cliente", details: error.message });
+  }
 });
 
 app.post("/clients", async (req, res) => res.json(await prisma.client.create({ data: req.body })));
