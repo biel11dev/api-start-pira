@@ -40,6 +40,7 @@ app.post("/register", async (req, res) => {
     const newUser = await prisma.user.create({ data: { username, password: hashedPassword } });
     res.json(newUser);
   } catch (error) {
+    console.log("Dados recebidos:", req.body); // Log dos dados recebidos
     res.status(400).json({ error: "Erro ao registrar usuário", details: error.message });
   }
 });
