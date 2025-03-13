@@ -77,7 +77,7 @@ app.delete("/clients/:id", async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) {
-      return res.status(400).json({ error: "ID inválido" }); // Retorna um erro 400 se o ID não for um número
+      return res.status(400).json({ error: "ID inválido" });
     }
 
     await prisma.client.delete({ where: { id } });
