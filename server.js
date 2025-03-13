@@ -65,8 +65,8 @@ app.get("/clients/:id", async (req, res) => {
     const client = await prisma.client.findUnique({
       where: { id: parseInt(req.params.id) },
       include: {
-        purchases: true,
-        payments: true,
+        Purchases: true,
+        Payments: true,
       },
     });
     if (!client) {
