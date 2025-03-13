@@ -26,7 +26,7 @@ model Client {
   name      String
   totalDebt Float
   createdAt DateTime   @default(now())
-  updatedAt DateTime
+  updatedAt DateTime @updatedAt
   Payment   Payment[]
   Purchase  Purchase[]
 }
@@ -37,7 +37,7 @@ model DailyReading {
   value     Float
   machineId Int
   createdAt DateTime @default(now())
-  updatedAt DateTime
+  updatedAt DateTime @updatedAt
   Machine   Machine  @relation(fields: [machineId], references: [id])
 }
 
@@ -49,14 +49,14 @@ model Despesa {
   date         DateTime
   DespesaFixa  Boolean
   createdAt    DateTime @default(now())
-  updatedAt    DateTime?
+  updatedAt    DateTime? @updatedAt
 }
 
 model Machine {
   id           Int            @id @default(autoincrement())
   name         String
   createdAt    DateTime       @default(now())
-  updatedAt    DateTime?
+  updatedAt    DateTime? @updatedAt
   DailyReading DailyReading[]
 }
 
@@ -66,7 +66,7 @@ model Payment {
   date      String
   clientId  Int
   createdAt DateTime @default(now())
-  updatedAt DateTime
+  updatedAt DateTime? @updatedAt
   Client    Client   @relation(fields: [clientId], references: [id])
 }
 
@@ -76,7 +76,7 @@ model Product {
   quantity  Int
   unit      String
   createdAt DateTime @default(now())
-  updatedAt DateTime @default(now())
+  updatedAt DateTime? @updatedAt
   value     Int
   valuecusto Int
 }
