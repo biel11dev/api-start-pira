@@ -104,7 +104,7 @@ app.get("/machines", async (req, res) => res.json(await prisma.machine.findMany(
 app.get("/machines/:id", async (req, res) => {
   const machine = await prisma.machine.findUnique({
     where: { id: parseInt(req.params.id) },
-    include: { readings: true },
+    include: { DailyReading: true },
   });
   res.json(machine || { error: "Máquina não encontrada" });
 });
