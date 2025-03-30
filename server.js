@@ -63,7 +63,19 @@ app.post("/login", async (req, res) => {
   }
 
   const token = jwt.sign({ userId: user.id }, SECRET_KEY, { expiresIn: "1h" });
-  res.json({ token });
+  // Inclua as permissões do usuário no retorno
+  res.json({
+    token,
+    permissions: {
+      caixa: user.caixa,
+      produtos: user.produtos,
+      maquinas: user.maquinas,
+      fiado: user.fiado,
+      despesas: user.despesas,
+      ponto: user.ponto,
+      acessos: user.acessos,
+    },
+  });
 });
 
 app.put("/users/:id", async (req, res) => {
