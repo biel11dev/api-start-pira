@@ -45,6 +45,15 @@ app.post("/register", async (req, res) => {
   }
 });
 
+app.get("/users", async (req, res) => {
+  try {
+    const users = await prisma.user.findMany();
+    res.json(users);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao buscar usuários", details: error.message });
+  }
+});
+
 app.post("/login", async (req, res) => {
   const { username, password } = req.body;
   const user = await prisma.user.findUnique({ where: { username } });
@@ -55,6 +64,22 @@ app.post("/login", async (req, res) => {
 
   const token = jwt.sign({ userId: user.id }, SECRET_KEY, { expiresIn: "1h" });
   res.json({ token });
+});
+
+app.put("/users/:id", async (req, res) => {
+  try {
+    const userId = parseInt(req.params.id);
+    const { caixa, produtos, maquinas, fiado, despesas, ponto, acessos } = req.body;
+
+    const updatedUser = await prisma.user.update({
+      where: { id: userId },
+      data: { caixa, produtos, maquinas, fiado, despesas, ponto, acessos },
+    });
+
+    res.json(updatedUser);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao atualizar permissões do usuário", details: error.message });
+  }
 });
 
 // ROTAS DE CLIENTES
@@ -537,10 +562,10 @@ app.post("/employees", async (req, res) => {
 
 app.put("/employees/:id", async (req, res) => {
   try {
-    const { name, position } = req.body;
+    const { name, position, carga } = req.body;
     const updatedEmployee = await prisma.employee.update({
       where: { id: parseInt(req.params.id) },
-      data: { name, position },
+      data: { name, position, carga },
     });
     res.json(updatedEmployee);
   } catch (error) {

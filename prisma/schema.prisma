@@ -97,6 +97,13 @@ model User {
   id        Int      @id @default(autoincrement())
   username  String   @unique
   password  String
+  caixa     Boolean?
+  produtos  Boolean?
+  maquinas  Boolean?
+  fiado     Boolean?
+  despesas  Boolean?
+  ponto     Boolean?
+  acessos   Boolean?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
@@ -105,15 +112,16 @@ model Employee {
   id        Int          @id @default(autoincrement())
   name      String       // Nome do funcionário
   position  String?      // Cargo do funcionário (opcional)
+  carga     Int          @default(0)
   createdAt DateTime     @default(now()) // Data de criação do registro
   points    DailyPoint[] // Relacionamento com os pontos diários
 }
 
 model DailyPoint {
   id         Int      @id @default(autoincrement())
-  date       DateTime // Data do ponto
-  entry      DateTime // Horário de entrada
-  exit       DateTime // Horário de saída
+  date       DateTime? // Data do ponto
+  entry      DateTime? // Horário de entrada
+  exit       DateTime? // Horário de saída
   gateOpen   DateTime? // Horário de abertura do portão (opcional)
   employeeId Int      // Relacionamento com o funcionário
   employee   Employee @relation(fields: [employeeId], references: [id])
