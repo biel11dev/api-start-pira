@@ -606,11 +606,22 @@ app.post("/daily-points", async (req, res) => {
 
 app.put("/daily-points/:id", async (req, res) => {
   try {
-    const pointId = parseInt(req.params.id);
-    const { date, entry, exit, gateOpen, employeeId } = req.body;
+    const employeeId = parseInt(req.params.id); // ID do funcionário
+    const { entry, exit, gateOpen } = req.body; // Horários enviados no formato HH:mm
 
     // Obter a data atual no formato ISO (apenas a parte da data)
     const currentDate = new Date().toISOString().split("T")[0];
+
+    // Função para combinar a data atual com o horário fornecido
+    const combineDateAndTime = (date, time) => {
+      if (!time) return null; // Retorna null se o horário não for fornecido
+      return new Date(`${date}T${time}:00.000Z`);
+    };
+
+    // Combina a data atual com os horários fornecidos
+    const entryDateTime = combineDateAndTime(currentDate, entry);
+    const exitDateTime = combineDateAndTime(currentDate, exit);
+    const gateOpenDateTime = combineDateAndTime(currentDate, gateOpen);
 
     // Verifica se já existe um registro para o employeeId e a data atual
     let existingPoint = await prisma.dailyPoint.findFirst({
@@ -628,14 +639,14 @@ app.put("/daily-points/:id", async (req, res) => {
       existingPoint = await prisma.dailyPoint.create({
         data: {
           date: new Date(currentDate), // Data atual
-          entry: entry ? new Date(entry) : null,
-          exit: exit ? new Date(exit) : null,
-          gateOpen: gateOpen ? new Date(gateOpen) : null,
+          entry: entryDateTime,
+          exit: exitDateTime,
+          gateOpen: gateOpenDateTime,
           employeeId,
         },
       });
 
-      return res.status(200).json({
+      return res.status(201).json({
         message: "Registro criado para o dia atual.",
         point: existingPoint,
       });
@@ -645,9 +656,9 @@ app.put("/daily-points/:id", async (req, res) => {
     const updatedPoint = await prisma.dailyPoint.update({
       where: { id: existingPoint.id },
       data: {
-        entry: entry ? new Date(entry) : existingPoint.entry,
-        exit: exit ? new Date(exit) : existingPoint.exit,
-        gateOpen: gateOpen ? new Date(gateOpen) : existingPoint.gateOpen,
+        entry: entryDateTime || existingPoint.entry,
+        exit: exitDateTime || existingPoint.exit,
+        gateOpen: gateOpenDateTime || existingPoint.gateOpen,
       },
     });
 
