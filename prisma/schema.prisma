@@ -100,3 +100,21 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
+
+model Employee {
+  id        Int          @id @default(autoincrement())
+  name      String       // Nome do funcionário
+  position  String?      // Cargo do funcionário (opcional)
+  createdAt DateTime     @default(now()) // Data de criação do registro
+  points    DailyPoint[] // Relacionamento com os pontos diários
+}
+
+model DailyPoint {
+  id         Int      @id @default(autoincrement())
+  date       DateTime // Data do ponto
+  entry      DateTime // Horário de entrada
+  exit       DateTime // Horário de saída
+  gateOpen   DateTime? // Horário de abertura do portão (opcional)
+  employeeId Int      // Relacionamento com o funcionário
+  employee   Employee @relation(fields: [employeeId], references: [id])
+}

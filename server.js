@@ -496,6 +496,144 @@ app.delete("/despesas/:id", async (req, res) => {
   }
 });
 
+// ROTAS DE FUNCIONÁRIOS
+app.get("/employees", async (req, res) => {
+  try {
+    const employees = await prisma.employee.findMany({
+      include: { points: true }, // Inclui os pontos diários relacionados
+    });
+    res.json(employees);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao buscar funcionários", details: error.message });
+  }
+});
+
+app.get("/employees/:id", async (req, res) => {
+  try {
+    const employee = await prisma.employee.findUnique({
+      where: { id: parseInt(req.params.id) },
+      include: { points: true }, // Inclui os pontos diários relacionados
+    });
+    if (!employee) {
+      return res.status(404).json({ error: "Funcionário não encontrado" });
+    }
+    res.json(employee);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao buscar funcionário", details: error.message });
+  }
+});
+
+app.post("/employees", async (req, res) => {
+  try {
+    const { name, position } = req.body;
+    const newEmployee = await prisma.employee.create({
+      data: { name, position },
+    });
+    res.status(201).json(newEmployee);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao criar funcionário", details: error.message });
+  }
+});
+
+app.put("/employees/:id", async (req, res) => {
+  try {
+    const { name, position } = req.body;
+    const updatedEmployee = await prisma.employee.update({
+      where: { id: parseInt(req.params.id) },
+      data: { name, position },
+    });
+    res.json(updatedEmployee);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao atualizar funcionário", details: error.message });
+  }
+});
+
+app.delete("/employees/:id", async (req, res) => {
+  try {
+    await prisma.employee.delete({
+      where: { id: parseInt(req.params.id) },
+    });
+    res.json({ message: "Funcionário excluído com sucesso" });
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao excluir funcionário", details: error.message });
+  }
+});
+
+// ROTAS DE PONTOS DIÁRIOS
+app.get("/daily-points", async (req, res) => {
+  try {
+    const points = await prisma.dailyPoint.findMany({
+      include: { employee: true }, // Inclui os dados do funcionário relacionado
+    });
+    res.json(points);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao buscar pontos diários", details: error.message });
+  }
+});
+
+app.get("/daily-points/:id", async (req, res) => {
+  try {
+    const point = await prisma.dailyPoint.findUnique({
+      where: { id: parseInt(req.params.id) },
+      include: { employee: true }, // Inclui os dados do funcionário relacionado
+    });
+    if (!point) {
+      return res.status(404).json({ error: "Ponto diário não encontrado" });
+    }
+    res.json(point);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao buscar ponto diário", details: error.message });
+  }
+});
+
+app.post("/daily-points", async (req, res) => {
+  try {
+    const { date, entry, exit, gateOpen, employeeId } = req.body;
+    const newPoint = await prisma.dailyPoint.create({
+      data: {
+        date: new Date(date),
+        entry: new Date(entry),
+        exit: new Date(exit),
+        gateOpen: gateOpen ? new Date(gateOpen) : null,
+        employeeId,
+      },
+    });
+    res.status(201).json(newPoint);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao criar ponto diário", details: error.message });
+  }
+});
+
+app.put("/daily-points/:id", async (req, res) => {
+  try {
+    const { date, entry, exit, gateOpen, employeeId } = req.body;
+    const updatedPoint = await prisma.dailyPoint.update({
+      where: { id: parseInt(req.params.id) },
+      data: {
+        date: new Date(date),
+        entry: new Date(entry),
+        exit: new Date(exit),
+        gateOpen: gateOpen ? new Date(gateOpen) : null,
+        employeeId,
+      },
+    });
+    res.json(updatedPoint);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao atualizar ponto diário", details: error.message });
+  }
+});
+
+app.delete("/daily-points/:id", async (req, res) => {
+  try {
+    await prisma.dailyPoint.delete({
+      where: { id: parseInt(req.params.id) },
+    });
+    res.json({ message: "Ponto diário excluído com sucesso" });
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao excluir ponto diário", details: error.message });
+  }
+});
+
 // MIDDLEWARE GLOBAL DE ERRO
 app.use((err, req, res, next) => {
   console.error("Erro:", err);
