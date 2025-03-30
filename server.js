@@ -606,20 +606,61 @@ app.post("/daily-points", async (req, res) => {
 
 app.put("/daily-points/:id", async (req, res) => {
   try {
+    const pointId = parseInt(req.params.id);
     const { date, entry, exit, gateOpen, employeeId } = req.body;
-    const updatedPoint = await prisma.dailyPoint.update({
-      where: { id: parseInt(req.params.id) },
-      data: {
-        date: new Date(date),
-        entry: new Date(entry),
-        exit: new Date(exit),
-        gateOpen: gateOpen ? new Date(gateOpen) : null,
-        employeeId,
+
+    // Obter a data atual no formato ISO (apenas a parte da data)
+    const currentDate = new Date().toISOString().split("T")[0];
+
+    // Verifica se já existe um registro para o employeeId e a data atual
+    let existingPoint = await prisma.dailyPoint.findFirst({
+      where: {
+        employeeId: employeeId,
+        date: {
+          gte: new Date(`${currentDate}T00:00:00.000Z`), // Data atual no início do dia
+          lt: new Date(`${currentDate}T23:59:59.999Z`), // Data atual no final do dia
+        },
       },
     });
-    res.json(updatedPoint);
+
+    if (!existingPoint) {
+      // Cria um novo registro se não existir
+      existingPoint = await prisma.dailyPoint.create({
+        data: {
+          date: new Date(currentDate), // Data atual
+          entry: entry ? new Date(entry) : null,
+          exit: exit ? new Date(exit) : null,
+          gateOpen: gateOpen ? new Date(gateOpen) : null,
+          employeeId,
+        },
+      });
+
+      return res.status(200).json({
+        message: "Registro criado para o dia atual.",
+        point: existingPoint,
+      });
+    }
+
+    // Atualiza o registro existente
+    const updatedPoint = await prisma.dailyPoint.update({
+      where: { id: existingPoint.id },
+      data: {
+        entry: entry ? new Date(entry) : existingPoint.entry,
+        exit: exit ? new Date(exit) : existingPoint.exit,
+        gateOpen: gateOpen ? new Date(gateOpen) : existingPoint.gateOpen,
+      },
+    });
+
+    res.status(200).json({
+      message: "Registro atualizado com sucesso.",
+      point: updatedPoint,
+    });
   } catch (error) {
-    res.status(500).json({ error: "Erro ao atualizar ponto diário", details: error.message });
+    console.error("Erro ao atualizar ou criar ponto diário:", error);
+    res.status(500).json({
+      error: "Erro ao atualizar ou criar ponto diário",
+      details: error.message,
+    });
   }
 });
 
