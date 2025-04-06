@@ -728,14 +728,17 @@ app.put("/daily-points/:id", async (req, res) => {
   }
 });
 
-app.delete("/daily-points/:id", async (req, res) => {
+app.delete("/daily-points", async (req, res) => {
+  const { employeeId } = req.query;
+
   try {
-    await prisma.dailyPoint.delete({
-      where: { id: parseInt(req.params.id) },
+    await prisma.dailyPoint.deleteMany({
+      where: { employeeId: parseInt(employeeId) },
     });
-    res.json({ message: "Ponto diário excluído com sucesso" });
+    res.json({ message: "Registros de DailyPoints excluídos com sucesso." });
   } catch (error) {
-    res.status(500).json({ error: "Erro ao excluir ponto diário", details: error.message });
+    console.error("Erro ao excluir registros de DailyPoints:", error);
+    res.status(500).json({ error: "Erro ao excluir registros de DailyPoints", details: error.message });
   }
 });
 
