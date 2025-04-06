@@ -143,6 +143,15 @@ app.get("/machines/:id", async (req, res) => {
     where: { id: parseInt(req.params.id) },
     include: { DailyReading: true },
   });
+
+  if (machine) {
+    // Formata o campo `date` de cada leitura diária
+    machine.DailyReading = machine.DailyReading.map((reading) => ({
+      ...reading,
+      date: format(parse(reading.date, "dd-MM-yyyy", new Date()), "dd-MM-yyyy"),
+    }));
+  }
+
   res.json(machine || { error: "Máquina não encontrada" });
 });
 
@@ -539,7 +548,14 @@ app.get("/employees", async (req, res) => {
     const employees = await prisma.employee.findMany({
       include: { points: true }, // Inclui os pontos diários relacionados
     });
-    res.json(employees);
+
+    // Adiciona um valor padrão para dailyHours se estiver null
+    const employeesWithDefaults = employees.map((employee) => ({
+      ...employee,
+      carga: employee.carga || 8, // Define 8 como valor padrão
+    }));
+
+    res.json(employeesWithDefaults);
   } catch (error) {
     res.status(500).json({ error: "Erro ao buscar funcionários", details: error.message });
   }
@@ -562,9 +578,9 @@ app.get("/employees/:id", async (req, res) => {
 
 app.post("/employees", async (req, res) => {
   try {
-    const { name, position } = req.body;
+    const { name, position, carga = 8 } = req.body; // Define 8 como valor padrão
     const newEmployee = await prisma.employee.create({
-      data: { name, position },
+      data: { name, position, carga },
     });
     res.status(201).json(newEmployee);
   } catch (error) {
