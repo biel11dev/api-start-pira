@@ -372,12 +372,12 @@ app.post("/products", async (req, res) => {
       return res.status(400).json({ error: "Quantidade deve ser um número válido." });
     }
 
-    const parsedValue = parseInt(value, 10);
+    const parsedValue = parseFloat(value, 10);
     if (isNaN(parsedValue)) {
       return res.status(400).json({ error: "Valor deve ser um número válido." });
     }
 
-    const parsedValueCusto = parseInt(valuecusto, 10);
+    const parsedValueCusto = parseFloat(valuecusto, 10);
     if (isNaN(parsedValueCusto)) {
       return res.status(400).json({ error: "Custo deve ser um número válido." });
     }
