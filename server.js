@@ -34,31 +34,31 @@ const authenticate = (req, res, next) => {
 
 async function sendResetEmail(email, token) {
   const transporter = nodemailer.createTransport({
-    host: "smtp.gmail.com", // Servidor SMTP (exemplo: Gmail)
+    host: "smtp.gmail.com",
     port: 587,
-    secure: false, // true para 465, false para outras portas
+    secure: false,
     auth: {
-      user: process.env.EMAIL_USER, // Seu e-mail (definido no arquivo .env)
-      pass: process.env.EMAIL_PASS, // Sua senha ou app password (definido no arquivo .env)
+      user: process.env.EMAIL_USER,
+      pass: process.env.EMAIL_PASS,
     },
   });
 
-  const resetLink = `https://start-pira-ftd.vercel.app/reset-password?token=${token}`; // Link de redefinição de senha
+  const resetLink = `https://start-pira-ftd.vercel.app/reset-password?token=${token}`;
 
   const mailOptions = {
-    from: '"Start Pira" <startpira01@gmail.com>', // Remetente atualizado
-    to: email, // Destinatário
-    subject: "Redefinição de Senha - Start Pira", // Assunto
+    from: '"Start Pira" <startpira01@gmail.com>',
+    to: email,
+    subject: "Redefinição de Senha - Start Pira",
     text: `Olá,
-  
-  Você solicitou a redefinição de sua senha. Use o link abaixo para redefini-la:
-  
-  ${resetLink}
-  
-  Se você não solicitou isso, ignore este e-mail.
-  
-  Atenciosamente,
-  Equipe Start Pira`,
+
+Você solicitou a redefinição de sua senha. Use o link abaixo para redefini-la:
+
+${resetLink}
+
+Se você não solicitou isso, ignore este e-mail.
+
+Atenciosamente,
+Equipe Start Pira`,
     html: `<p>Olá,</p>
            <p>Você solicitou a redefinição de sua senha. Use o link abaixo para redefini-la:</p>
            <a href="${resetLink}">Redefinir Senha</a>
@@ -68,11 +68,6 @@ async function sendResetEmail(email, token) {
 
   await transporter.sendMail(mailOptions);
   console.log(`E-mail de redefinição enviado para ${email}`);
-}
-
-// Função para gerar um token único para redefinição de senha
-function generateResetToken() {
-  return require("crypto").randomBytes(32).toString("hex");
 }
 
 // ROTAS DE AUTENTICAÇÃO
@@ -796,20 +791,34 @@ app.post("/forgot-password", async (req, res) => {
       return res.status(404).json({ message: "Usuário não encontrado" });
     }
 
-    const token = generateResetToken(); // Gere um token único
-    await prisma.passwordReset.create({
-      data: {
-        email,
-        token,
-        expiresAt: new Date(Date.now() + 3600000), // Token válido por 1 hora
-      },
-    });
+    const token = jwt.sign({ email }, SECRET_KEY, { expiresIn: "1h" });
 
     await sendResetEmail(email, token); // Função para enviar o e-mail
     res.json({ message: "E-mail de redefinição enviado com sucesso" });
   } catch (error) {
     console.error("Erro ao processar redefinição de senha:", error);
     res.status(500).json({ message: "Erro ao processar redefinição de senha" });
+  }
+});
+
+app.post("/reset-password", async (req, res) => {
+  const { token, newPassword } = req.body;
+
+  try {
+    // Verifica e decodifica o token JWT
+    const decoded = jwt.verify(token, SECRET_KEY);
+
+    // Atualiza a senha do usuário
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    await prisma.user.update({
+      where: { username: decoded.email },
+      data: { password: hashedPassword },
+    });
+
+    res.json({ message: "Senha redefinida com sucesso" });
+  } catch (error) {
+    console.error("Erro ao redefinir senha:", error);
+    res.status(400).json({ message: "Token inválido ou expirado" });
   }
 });
 
