@@ -742,6 +742,34 @@ app.delete("/daily-points", async (req, res) => {
   }
 });
 
+// ROTA DE RECUPERAÇÃO DE SENHA
+
+app.post("/forgot-password", async (req, res) => {
+  const { email } = req.body;
+
+  try {
+    const user = await prisma.user.findUnique({ where: { email } });
+    if (!user) {
+      return res.status(404).json({ message: "Usuário não encontrado" });
+    }
+
+    const token = generateResetToken(); // Gere um token único
+    await prisma.passwordReset.create({
+      data: {
+        email,
+        token,
+        expiresAt: new Date(Date.now() + 3600000), // Token válido por 1 hora
+      },
+    });
+
+    await sendResetEmail(email, token); // Função para enviar o e-mail
+    res.json({ message: "E-mail de redefinição enviado com sucesso" });
+  } catch (error) {
+    console.error("Erro ao processar redefinição de senha:", error);
+    res.status(500).json({ message: "Erro ao processar redefinição de senha" });
+  }
+});
+
 // MIDDLEWARE GLOBAL DE ERRO
 app.use((err, req, res, next) => {
   console.error("Erro:", err);
