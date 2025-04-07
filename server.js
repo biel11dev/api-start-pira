@@ -517,10 +517,10 @@ app.post("/despesas", async (req, res) => {
 
 app.put("/despesas/:id", async (req, res) => {
   try {
-    const { valorDespesa, descDespesa } = req.body;
+    const { nomeDespesa, valorDespesa, descDespesa } = req.body;
     const updatedDespesa = await prisma.despesa.update({
       where: { id: parseInt(req.params.id) },
-      data: { valorDespesa, descDespesa },
+      data: { nomeDespesa, valorDespesa, descDespesa },
     });
     res.json(updatedDespesa);
   } catch (error) {
