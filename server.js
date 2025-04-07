@@ -791,7 +791,7 @@ app.post("/forgot-password", async (req, res) => {
   const { email } = req.body;
 
   try {
-    const user = await prisma.user.findUnique({ where: { email } });
+    const user = await prisma.user.findUnique({ where: { username: email } });
     if (!user) {
       return res.status(404).json({ message: "Usuário não encontrado" });
     }
