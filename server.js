@@ -7,7 +7,7 @@ const helmet = require("helmet");
 const morgan = require("morgan");
 const { PrismaClient } = require("@prisma/client");
 const { format, parse } = require("date-fns");
-
+const nodemailer = require("nodemailer");
 const prisma = new PrismaClient();
 const app = express();
 const port = 3000;
@@ -31,6 +31,49 @@ const authenticate = (req, res, next) => {
     res.status(401).json({ error: "Token inválido" });
   }
 };
+
+async function sendResetEmail(email, token) {
+  const transporter = nodemailer.createTransport({
+    host: "smtp.gmail.com", // Servidor SMTP (exemplo: Gmail)
+    port: 587,
+    secure: false, // true para 465, false para outras portas
+    auth: {
+      user: process.env.EMAIL_USER, // Seu e-mail (definido no arquivo .env)
+      pass: process.env.EMAIL_PASS, // Sua senha ou app password (definido no arquivo .env)
+    },
+  });
+
+  const resetLink = `https://start-pira-ftd.vercel.app/reset-password?token=${token}`; // Link de redefinição de senha
+
+  const mailOptions = {
+    from: '"Start Pira" <startpira01@gmail.com>', // Remetente atualizado
+    to: email, // Destinatário
+    subject: "Redefinição de Senha - Start Pira", // Assunto
+    text: `Olá,
+  
+  Você solicitou a redefinição de sua senha. Use o link abaixo para redefini-la:
+  
+  ${resetLink}
+  
+  Se você não solicitou isso, ignore este e-mail.
+  
+  Atenciosamente,
+  Equipe Start Pira`,
+    html: `<p>Olá,</p>
+           <p>Você solicitou a redefinição de sua senha. Use o link abaixo para redefini-la:</p>
+           <a href="${resetLink}">Redefinir Senha</a>
+           <p>Se você não solicitou isso, ignore este e-mail.</p>
+           <p>Atenciosamente,<br>Equipe Start Pira</p>`,
+  };
+
+  await transporter.sendMail(mailOptions);
+  console.log(`E-mail de redefinição enviado para ${email}`);
+}
+
+// Função para gerar um token único para redefinição de senha
+function generateResetToken() {
+  return require("crypto").randomBytes(32).toString("hex");
+}
 
 // ROTAS DE AUTENTICAÇÃO
 app.post("/register", async (req, res) => {
