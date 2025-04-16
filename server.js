@@ -12,6 +12,7 @@ const prisma = new PrismaClient();
 const app = express();
 const port = 3000;
 const SECRET_KEY = process.env.SECRET_KEY || "2a51f0c6b96167b01f59b41aa2407066735cc39ee71ebd041d8ff59b75c60c15";
+const path = require("path");
 
 app.use(helmet());
 app.use(cors());
@@ -71,7 +72,7 @@ Equipe Start Pira`,
 }
 
 // ROTAS DE AUTENTICAÇÃO
-app.post("/register", async (req, res) => {
+app.post("/api/register", async (req, res) => {
   const { username, password } = req.body;
   try {
     const hashedPassword = await bcrypt.hash(password, 10);
@@ -83,7 +84,7 @@ app.post("/register", async (req, res) => {
   }
 });
 
-app.get("/users", async (req, res) => {
+app.get("/api/users", async (req, res) => {
   try {
     const users = await prisma.user.findMany();
     res.json(users);
@@ -92,7 +93,7 @@ app.get("/users", async (req, res) => {
   }
 });
 
-app.post("/login", async (req, res) => {
+app.post("/api/login", async (req, res) => {
   const { username, password } = req.body;
   const user = await prisma.user.findUnique({ where: { username } });
 
@@ -116,7 +117,7 @@ app.post("/login", async (req, res) => {
   });
 });
 
-app.put("/users/:id", async (req, res) => {
+app.put("/api/users/:id", async (req, res) => {
   try {
     const userId = parseInt(req.params.id);
     const { caixa, produtos, maquinas, fiado, despesas, ponto, acessos } = req.body;
@@ -133,9 +134,9 @@ app.put("/users/:id", async (req, res) => {
 });
 
 // ROTAS DE CLIENTES
-app.get("/clients", async (req, res) => res.json(await prisma.client.findMany()));
+app.get("/api/clients", async (req, res) => res.json(await prisma.client.findMany()));
 
-app.get("/clients/:id", async (req, res) => {
+app.get("/api/clients/:id", async (req, res) => {
   try {
     const client = await prisma.client.findUnique({
       where: { id: parseInt(req.params.id) },
@@ -153,13 +154,13 @@ app.get("/clients/:id", async (req, res) => {
   }
 });
 
-app.post("/clients", async (req, res) => res.json(await prisma.client.create({ data: req.body })));
+app.post("/api/clients", async (req, res) => res.json(await prisma.client.create({ data: req.body })));
 
-app.put("/clients/:id", async (req, res) => {
+app.put("/api/clients/:id", async (req, res) => {
   res.json(await prisma.client.update({ where: { id: parseInt(req.params.id) }, data: req.body }));
 });
 
-app.delete("/clients/:id", async (req, res) => {
+app.delete("/api/clients/:id", async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) {
@@ -174,9 +175,9 @@ app.delete("/clients/:id", async (req, res) => {
 });
 
 // ROTAS DE MÁQUINAS
-app.get("/machines", async (req, res) => res.json(await prisma.machine.findMany()));
+app.get("/api/machines", async (req, res) => res.json(await prisma.machine.findMany()));
 
-app.get("/machines/:id", async (req, res) => {
+app.get("/api/machines/:id", async (req, res) => {
   const machine = await prisma.machine.findUnique({
     where: { id: parseInt(req.params.id) },
     include: { DailyReading: true },
@@ -193,13 +194,13 @@ app.get("/machines/:id", async (req, res) => {
   res.json(machine || { error: "Máquina não encontrada" });
 });
 
-app.post("/machines", async (req, res) => res.json(await prisma.machine.create({ data: req.body })));
+app.post("/api/machines", async (req, res) => res.json(await prisma.machine.create({ data: req.body })));
 
-app.put("/machines/:id", async (req, res) => {
+app.put("/api/machines/:id", async (req, res) => {
   res.json(await prisma.machine.update({ where: { id: parseInt(req.params.id) }, data: req.body }));
 });
 
-app.delete("/machines/:id", async (req, res) => {
+app.delete("/api/machines/:id", async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) {
@@ -214,16 +215,16 @@ app.delete("/machines/:id", async (req, res) => {
 });
 
 // ROTAS DE COMPRAS (PURCHASES)
-app.get("/purchases", async (req, res) => res.json(await prisma.purchase.findMany()));
+app.get("/api/purchases", async (req, res) => res.json(await prisma.purchase.findMany()));
 
-app.get("/purchases/:id", async (req, res) => {
+app.get("/api/purchases/:id", async (req, res) => {
   const purchase = await prisma.purchase.findUnique({
     where: { id: parseInt(req.params.id) },
   });
   res.json(purchase || { error: "Compra não encontrada" });
 });
 
-app.post("/purchases", async (req, res) => {
+app.post("/api/purchases", async (req, res) => {
   try {
     const { product, quantity, total, date, clientId } = req.body;
 
@@ -243,7 +244,7 @@ app.post("/purchases", async (req, res) => {
   }
 });
 
-app.put("/purchases/:id", async (req, res) => {
+app.put("/api/purchases/:id", async (req, res) => {
   try {
     const { product, quantity, total, date, clientId } = req.body;
 
@@ -264,7 +265,7 @@ app.put("/purchases/:id", async (req, res) => {
   }
 });
 
-app.delete("/purchases/:id", async (req, res) => {
+app.delete("/api/purchases/:id", async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) {
@@ -279,18 +280,18 @@ app.delete("/purchases/:id", async (req, res) => {
 });
 
 // ROTAS DE PAGAMENTOS
-app.get("/payments", async (req, res) => res.json(await prisma.payment.findMany()));
+app.get("/api/payments", async (req, res) => res.json(await prisma.payment.findMany()));
 
-app.get("/payments/:id", async (req, res) => {
+app.get("/api/payments/:id", async (req, res) => {
   const payment = await prisma.payment.findUnique({
     where: { id: parseInt(req.params.id) },
   });
   res.json(payment || { error: "Pagamento não encontrado" });
 });
 
-app.post("/payments", async (req, res) => res.json(await prisma.payment.create({ data: req.body })));
+app.post("/api/payments", async (req, res) => res.json(await prisma.payment.create({ data: req.body })));
 
-app.put("/payments/:id", async (req, res) => {
+app.put("/api/payments/:id", async (req, res) => {
   try {
     const { amount, date, clientId } = req.body;
 
@@ -307,7 +308,7 @@ app.put("/payments/:id", async (req, res) => {
   }
 });
 
-app.delete("/payments/:id", async (req, res) => {
+app.delete("/api/payments/:id", async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) {
@@ -322,7 +323,7 @@ app.delete("/payments/:id", async (req, res) => {
 });
 
 // ROTAS DE LEITURAS DIÁRIAS
-app.get("/daily-readings", async (req, res) => {
+app.get("/api/daily-readings", async (req, res) => {
   const { machineId, date } = req.query;
 
   let whereClause = {
@@ -345,19 +346,19 @@ app.get("/daily-readings", async (req, res) => {
   }
 });
 
-app.get("/daily-readings/:id", async (req, res) => {
+app.get("/api/daily-readings/:id", async (req, res) => {
   const dailyReading = await prisma.dailyReading.findUnique({
     where: { id: parseInt(req.params.id) },
   });
   res.json(dailyReading || { error: "Leitura diária não encontrada" });
 });
 
-app.post("/daily-readings", async (req, res) => {
+app.post("/api/daily-readings", async (req, res) => {
   const { date, value, machineId } = req.body;
   res.json(await prisma.dailyReading.create({ data: { date: date, value, machineId } }));
 });
 
-app.put("/daily-readings/:id", async (req, res) => {
+app.put("/api/daily-readings/:id", async (req, res) => {
   try {
     const { date, value, machineId } = req.body;
     const formattedDate = format(date, "dd-MM-yyyy"); // Formata a data para "dd-MM-yyyy"
@@ -373,7 +374,7 @@ app.put("/daily-readings/:id", async (req, res) => {
   }
 });
 
-app.delete("/daily-readings/:id", async (req, res) => {
+app.delete("/api/daily-readings/:id", async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) {
@@ -388,16 +389,16 @@ app.delete("/daily-readings/:id", async (req, res) => {
 });
 
 // ROTAS DE PRODUTOS (CORREÇÃO DO ERRO `quantity`)
-app.get("/products", async (req, res) => res.json(await prisma.product.findMany()));
+app.get("/api/products", async (req, res) => res.json(await prisma.product.findMany()));
 
-app.get("/products/:id", async (req, res) => {
+app.get("/api/products/:id", async (req, res) => {
   const product = await prisma.product.findUnique({
     where: { id: parseInt(req.params.id) },
   });
   res.json(product || { error: "Produto não encontrado" });
 });
 
-app.post("/products", async (req, res) => {
+app.post("/api/products", async (req, res) => {
   try {
     const { name, quantity, unit, value, valuecusto } = req.body;
 
@@ -430,7 +431,7 @@ app.post("/products", async (req, res) => {
   }
 });
 
-app.put("/products/:id", async (req, res) => {
+app.put("/api/products/:id", async (req, res) => {
   try {
     const { name, quantity, unit, value, valuecusto } = req.body;
 
@@ -464,7 +465,7 @@ app.put("/products/:id", async (req, res) => {
   }
 });
 
-app.delete("/products/:id", async (req, res) => {
+app.delete("/api/products/:id", async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) {
@@ -479,25 +480,25 @@ app.delete("/products/:id", async (req, res) => {
 });
 
 // ROTAS DE BALANÇO
-app.get("/balances", async (req, res) => res.json(await prisma.balance.findMany()));
+app.get("/api/balances", async (req, res) => res.json(await prisma.balance.findMany()));
 
-app.get("/balances/:id", async (req, res) => {
+app.get("/api/balances/:id", async (req, res) => {
   const balance = await prisma.balance.findUnique({
     where: { id: parseInt(req.params.id) },
   });
   res.json(balance || { error: "Saldo não encontrado" });
 });
 
-app.post("/balances", async (req, res) => {
+app.post("/api/balances", async (req, res) => {
   const { date, balance, cartao, dinheiro } = req.body;
   res.json(await prisma.balance.create({ data: { date, balance, cartao, dinheiro } }));
 });
 
-app.put("/balances/:id", async (req, res) => {
+app.put("/api/balances/:id", async (req, res) => {
   res.json(await prisma.balance.update({ where: { id: parseInt(req.params.id) }, data: req.body }));
 });
 
-app.delete("/balances/:id", async (req, res) => {
+app.delete("/api/balances/:id", async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) {
@@ -512,7 +513,7 @@ app.delete("/balances/:id", async (req, res) => {
 });
 
 // ROTAS DE DESPESAS
-app.get("/despesas", async (req, res) => {
+app.get("/api/despesas", async (req, res) => {
   try {
     const despesas = await prisma.despesa.findMany();
     res.json(despesas);
@@ -521,7 +522,7 @@ app.get("/despesas", async (req, res) => {
   }
 });
 
-app.get("/despesas/:id", async (req, res) => {
+app.get("/api/despesas/:id", async (req, res) => {
   try {
     const despesa = await prisma.despesa.findUnique({
       where: { id: parseInt(req.params.id) },
@@ -532,7 +533,7 @@ app.get("/despesas/:id", async (req, res) => {
   }
 });
 
-app.post("/despesas", async (req, res) => {
+app.post("/api/despesas", async (req, res) => {
   try {
     const { nomeDespesa, valorDespesa, descDespesa, date, DespesaFixa } = req.body;
     console.log("Dados recebidos:", req.body); // Log dos dados recebidos
@@ -553,7 +554,7 @@ app.post("/despesas", async (req, res) => {
   }
 });
 
-app.put("/despesas/:id", async (req, res) => {
+app.put("/api/despesas/:id", async (req, res) => {
   try {
     const { nomeDespesa, valorDespesa, descDespesa } = req.body;
     const updatedDespesa = await prisma.despesa.update({
@@ -566,7 +567,7 @@ app.put("/despesas/:id", async (req, res) => {
   }
 });
 
-app.delete("/despesas/:id", async (req, res) => {
+app.delete("/api/despesas/:id", async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) {
@@ -581,7 +582,7 @@ app.delete("/despesas/:id", async (req, res) => {
 });
 
 // ROTAS DE FUNCIONÁRIOS
-app.get("/employees", async (req, res) => {
+app.get("/api/employees", async (req, res) => {
   try {
     const employees = await prisma.employee.findMany({
       include: { points: true }, // Inclui os pontos diários relacionados
@@ -599,7 +600,7 @@ app.get("/employees", async (req, res) => {
   }
 });
 
-app.get("/employees/:id", async (req, res) => {
+app.get("/api/employees/:id", async (req, res) => {
   try {
     const employee = await prisma.employee.findUnique({
       where: { id: parseInt(req.params.id) },
@@ -614,7 +615,7 @@ app.get("/employees/:id", async (req, res) => {
   }
 });
 
-app.post("/employees", async (req, res) => {
+app.post("/api/employees", async (req, res) => {
   try {
     const { name, position, carga = 8 } = req.body; // Define 8 como valor padrão
     const newEmployee = await prisma.employee.create({
@@ -626,7 +627,7 @@ app.post("/employees", async (req, res) => {
   }
 });
 
-app.put("/employees/:id", async (req, res) => {
+app.put("/api/employees/:id", async (req, res) => {
   try {
     const { name, position, carga } = req.body;
     const updatedEmployee = await prisma.employee.update({
@@ -639,7 +640,7 @@ app.put("/employees/:id", async (req, res) => {
   }
 });
 
-app.delete("/employees/:id", async (req, res) => {
+app.delete("/api/employees/:id", async (req, res) => {
   try {
     await prisma.employee.delete({
       where: { id: parseInt(req.params.id) },
@@ -651,7 +652,7 @@ app.delete("/employees/:id", async (req, res) => {
 });
 
 // ROTAS DE PONTOS DIÁRIOS
-app.get("/daily-points", async (req, res) => {
+app.get("/api/daily-points", async (req, res) => {
   try {
     const points = await prisma.dailyPoint.findMany({
       include: { employee: true }, // Inclui os dados do funcionário relacionado
@@ -662,7 +663,7 @@ app.get("/daily-points", async (req, res) => {
   }
 });
 
-app.get("/daily-points/:id", async (req, res) => {
+app.get("/api/daily-points/:id", async (req, res) => {
   try {
     const point = await prisma.dailyPoint.findUnique({
       where: { id: parseInt(req.params.id) },
@@ -677,7 +678,7 @@ app.get("/daily-points/:id", async (req, res) => {
   }
 });
 
-app.post("/daily-points", async (req, res) => {
+app.post("/api/daily-points", async (req, res) => {
   try {
     const { date, entry, exit, gateOpen, employeeId } = req.body;
     const newPoint = await prisma.dailyPoint.create({
@@ -695,7 +696,7 @@ app.post("/daily-points", async (req, res) => {
   }
 });
 
-app.put("/daily-points/:id", async (req, res) => {
+app.put("/api/daily-points/:id", async (req, res) => {
   try {
     const employeeId = parseInt(req.params.id); // ID do funcionário
     const { entry, exit, gateOpen } = req.body; // Horários enviados no formato HH:mm
@@ -766,7 +767,7 @@ app.put("/daily-points/:id", async (req, res) => {
   }
 });
 
-app.delete("/daily-points", async (req, res) => {
+app.delete("/api/daily-points", async (req, res) => {
   const { employeeId } = req.query;
 
   try {
@@ -782,7 +783,7 @@ app.delete("/daily-points", async (req, res) => {
 
 // ROTA DE RECUPERAÇÃO DE SENHA
 
-app.post("/forgot-password", async (req, res) => {
+app.post("/api/forgot-password", async (req, res) => {
   const { email } = req.body;
 
   try {
@@ -801,7 +802,7 @@ app.post("/forgot-password", async (req, res) => {
   }
 });
 
-app.post("/reset-password", async (req, res) => {
+app.post("/api/reset-password", async (req, res) => {
   const { token, newPassword } = req.body;
 
   try {
@@ -820,6 +821,27 @@ app.post("/reset-password", async (req, res) => {
     console.error("Erro ao redefinir senha:", error);
     res.status(400).json({ message: "Token inválido ou expirado" });
   }
+});
+
+app.post("/api/validate-token", (req, res) => {
+  const { token } = req.body;
+
+  try {
+    jwt.verify(token, SECRET_KEY);
+    res.json({ message: "Token válido" });
+  } catch (error) {
+    console.error("Token inválido ou expirado:", error);
+    res.status(401).json({ message: "Token inválido ou expirado" });
+  }
+});
+
+// ROTA DE TESTE
+// Middleware para servir os arquivos estáticos do React
+app.use(express.static(path.join(__dirname, "build")));
+
+// Redireciona todas as requisições que não sejam da API para o React
+app.get("*", (req, res) => {
+  res.sendFile(path.join(__dirname, "build", "index.html"));
 });
 
 // MIDDLEWARE GLOBAL DE ERRO
