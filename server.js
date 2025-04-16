@@ -837,11 +837,11 @@ app.post("/api/validate-token", (req, res) => {
 
 // ROTA DE TESTE
 // Middleware para servir os arquivos estáticos do React
-app.use(express.static(path.join(__dirname, "build")));
+app.use(express.static(path.join(__dirname, "dist")));
 
 // Redireciona todas as requisições que não sejam da API para o React
 app.get("*", (req, res) => {
-  res.sendFile(path.join(__dirname, "build", "index.html"));
+  res.sendFile(path.join(__dirname, "dist", "index.html"));
 });
 
 // MIDDLEWARE GLOBAL DE ERRO
