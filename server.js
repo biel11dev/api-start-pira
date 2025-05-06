@@ -14,7 +14,19 @@ const port = 3000;
 const SECRET_KEY = process.env.SECRET_KEY || "2a51f0c6b96167b01f59b41aa2407066735cc39ee71ebd041d8ff59b75c60c15";
 const path = require("path");
 
-app.use(helmet());
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        connectSrc: ["'self'", "https://api-start-pira.vercel.app"],
+        scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        imgSrc: ["'self'", "data:"],
+      },
+    },
+  })
+);
 app.use(cors());
 app.use(express.json());
 app.use(morgan("dev"));
@@ -444,12 +456,12 @@ app.put("/api/products/:id", async (req, res) => {
       return res.status(400).json({ error: "Quantidade deve ser um número válido." });
     }
 
-    const parsedValue = parseInt(value, 10);
+    const parsedValue = parseFloat(value, 10);
     if (isNaN(parsedValue)) {
       return res.status(400).json({ error: "Valor deve ser um número válido." });
     }
 
-    const parsedValueCusto = parseInt(valuecusto, 10);
+    const parsedValueCusto = parseFloat(valuecusto, 10);
     if (isNaN(parsedValueCusto)) {
       return res.status(400).json({ error: "Custo deve ser um número válido." });
     }
