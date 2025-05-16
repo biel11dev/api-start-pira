@@ -126,3 +126,10 @@ model DailyPoint {
   employeeId Int      // Relacionamento com o funcionário
   employee   Employee @relation(fields: [employeeId], references: [id])
 }
+
+model CadDespesa {
+  id         Int      @id @default(autoincrement())
+  nomeDespesa String?
+  createdAt DateTime     @default(now()) // Data de criação do registro
+
+}

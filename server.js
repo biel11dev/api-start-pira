@@ -847,6 +847,57 @@ app.post("/api/validate-token", (req, res) => {
   }
 });
 
+// ROTAS DE DESPESAS (CADASTRO)
+app.get("/api/cadastrodesp", async (req, res) => res.json(await prisma.purchase.findMany()));
+
+app.get("/api/cadastrodesp/:id", async (req, res) => {
+  const CadDespesa = await prisma.CadDespesa.findUnique({
+    where: { id: parseInt(req.params.id) },
+  });
+  res.json(CadDespesa || { error: "Despesa não encontrada" });
+});
+
+app.post("/api/cadastrodesp", async (req, res) => {
+  try {
+    const { nomeDespesa } = req.body;
+    const newDespesa = await prisma.CadDespesa.create({
+      data: { nomeDespesa },
+    });
+
+    res.status(201).json(newDespesa);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao criar Despesa", details: error.message });
+  }
+});
+
+app.put("/api/cadastrodesp/:id", async (req, res) => {
+  try {
+    const { nomeDespesa } = req.body;
+    const updatedDespesa = await prisma.CadDespesa.update({
+      where: { id: parseInt(req.params.id) },
+      data: { nomeDespesa },
+    });
+
+    res.json(updatedDespesa);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao atualizar compra", details: error.message });
+  }
+});
+
+app.delete("/api/cadastrodesp/:id", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) {
+      return res.status(400).json({ error: "ID inválido" });
+    }
+
+    await prisma.CadDespesa.delete({ where: { id } });
+    res.json({ message: "Despesa excluída com sucesso" });
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao excluir compra", details: error.message });
+  }
+});
+
 // ROTA DE TESTE
 // Middleware para servir os arquivos estáticos do React
 app.use(express.static(path.join(__dirname, "dist")));
