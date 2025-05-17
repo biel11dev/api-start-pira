@@ -848,7 +848,7 @@ app.post("/api/validate-token", (req, res) => {
 });
 
 // ROTAS DE DESPESAS (CADASTRO)
-app.get("/api/cadastrodesp", async (req, res) => res.json(await prisma.purchase.findMany()));
+app.get("/api/cadastrodesp", async (req, res) => res.json(await prisma.CadDespesa.findMany()));
 
 app.get("/api/cadastrodesp/:id", async (req, res) => {
   const CadDespesa = await prisma.CadDespesa.findUnique({
