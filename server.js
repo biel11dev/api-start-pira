@@ -666,8 +666,31 @@ app.delete("/api/employees/:id", async (req, res) => {
 // ROTAS DE PONTOS DIÁRIOS
 app.get("/api/daily-points", async (req, res) => {
   try {
+    const { employeeId, date } = req.query;
+
+    let where = {};
+    if (employeeId) {
+      where.employeeId = parseInt(employeeId);
+    }
+
+    if (date) {
+      // Verifica se a data está no formato "YYYY-MM"
+
+      const [year, month] = date.split("-");
+      const startDate = new Date(`${year}-${month}-01T00:00:00.000Z`);
+      // Pega o primeiro dia do mês seguinte
+      const endDate = new Date(startDate);
+      endDate.setMonth(endDate.getMonth() + 1);
+
+      where.date = {
+        gte: startDate,
+        lt: endDate,
+      };
+    }
+
     const points = await prisma.dailyPoint.findMany({
-      include: { employee: true }, // Inclui os dados do funcionário relacionado
+      where,
+      include: { employee: true },
     });
     res.json(points);
   } catch (error) {
@@ -677,12 +700,22 @@ app.get("/api/daily-points", async (req, res) => {
 
 app.get("/api/daily-points/:id", async (req, res) => {
   try {
-    const point = await prisma.dailyPoint.findUnique({
-      where: { id: parseInt(req.params.id) },
-      include: { employee: true }, // Inclui os dados do funcionário relacionado
+    const employeeId = parseInt(req.params.id);
+    const { date } = req.query;
+    const usedDate = date ? new Date(date).toISOString().split("T")[0] : new Date().toISOString().split("T")[0];
+
+    const point = await prisma.dailyPoint.findFirst({
+      where: {
+        employeeId,
+        date: {
+          gte: new Date(`${usedDate}T00:00:00.000Z`),
+          lt: new Date(`${usedDate}T23:59:59.999Z`),
+        },
+      },
+      include: { employee: true },
     });
     if (!point) {
-      return res.status(404).json({ error: "Ponto diário não encontrado" });
+      return res.json(null);
     }
     res.json(point);
   } catch (error) {
@@ -693,12 +726,23 @@ app.get("/api/daily-points/:id", async (req, res) => {
 app.post("/api/daily-points", async (req, res) => {
   try {
     const { date, entry, exit, gateOpen, employeeId } = req.body;
+
+    // Função para combinar data e hora
+    const combineDateAndTime = (dateStr, timeStr) => {
+      if (!dateStr || !timeStr) return null;
+      return new Date(`${dateStr}T${timeStr}:00.000Z`);
+    };
+
+    const entryDateTime = combineDateAndTime(date, entry);
+    const exitDateTime = combineDateAndTime(date, exit);
+    const gateOpenDateTime = combineDateAndTime(date, gateOpen);
+
     const newPoint = await prisma.dailyPoint.create({
       data: {
         date: new Date(date),
-        entry: new Date(entry),
-        exit: new Date(exit),
-        gateOpen: gateOpen ? new Date(gateOpen) : null,
+        entry: entryDateTime,
+        exit: exitDateTime,
+        gateOpen: gateOpenDateTime,
         employeeId,
       },
     });
@@ -710,39 +754,35 @@ app.post("/api/daily-points", async (req, res) => {
 
 app.put("/api/daily-points/:id", async (req, res) => {
   try {
-    const employeeId = parseInt(req.params.id); // ID do funcionário
-    const { entry, exit, gateOpen } = req.body; // Horários enviados no formato HH:mm
+    const employeeId = parseInt(req.params.id);
+    const { entry, exit, gateOpen, date } = req.body; // Adicione 'date' aqui
 
-    // Obter a data atual no formato ISO (apenas a parte da data)
-    const currentDate = new Date().toISOString().split("T")[0];
+    // Use a data enviada pelo front-end, ou a data atual como fallback
+    const usedDate = date ? new Date(date).toISOString().split("T")[0] : new Date().toISOString().split("T")[0];
 
-    // Função para combinar a data atual com o horário fornecido
     const combineDateAndTime = (date, time) => {
-      if (!time) return null; // Retorna null se o horário não for fornecido
+      if (!time) return null;
       return new Date(`${date}T${time}:00.000Z`);
     };
 
-    // Combina a data atual com os horários fornecidos
-    const entryDateTime = combineDateAndTime(currentDate, entry);
-    const exitDateTime = combineDateAndTime(currentDate, exit);
-    const gateOpenDateTime = combineDateAndTime(currentDate, gateOpen);
+    const entryDateTime = combineDateAndTime(usedDate, entry);
+    const exitDateTime = combineDateAndTime(usedDate, exit);
+    const gateOpenDateTime = combineDateAndTime(usedDate, gateOpen);
 
-    // Verifica se já existe um registro para o employeeId e a data atual
     let existingPoint = await prisma.dailyPoint.findFirst({
       where: {
         employeeId: employeeId,
         date: {
-          gte: new Date(`${currentDate}T00:00:00.000Z`), // Data atual no início do dia
-          lt: new Date(`${currentDate}T23:59:59.999Z`), // Data atual no final do dia
+          gte: new Date(`${usedDate}T00:00:00.000Z`),
+          lt: new Date(`${usedDate}T23:59:59.999Z`),
         },
       },
     });
 
     if (!existingPoint) {
-      // Cria um novo registro se não existir
       existingPoint = await prisma.dailyPoint.create({
         data: {
-          date: new Date(currentDate), // Data atual
+          date: new Date(usedDate),
           entry: entryDateTime,
           exit: exitDateTime,
           gateOpen: gateOpenDateTime,
@@ -751,12 +791,11 @@ app.put("/api/daily-points/:id", async (req, res) => {
       });
 
       return res.status(201).json({
-        message: "Registro criado para o dia atual.",
+        message: "Registro criado para o dia informado.",
         point: existingPoint,
       });
     }
 
-    // Atualiza o registro existente
     const updatedPoint = await prisma.dailyPoint.update({
       where: { id: existingPoint.id },
       data: {
