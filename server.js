@@ -819,13 +819,39 @@ app.put("/api/daily-points/:id", async (req, res) => {
 });
 
 app.delete("/api/daily-points/:id", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) {
+      return res.status(400).json({ error: "ID inválido" });
+    }
+
+    await prisma.dailyPoint.delete({ where: { id } });
+    res.json({ message: "Registro de DailyPoint excluído com sucesso." });
+  } catch (error) {
+    console.error("Erro ao excluir registro de DailyPoint:", error);
+    res.status(500).json({ error: "Erro ao excluir registro de DailyPoint", details: error.message });
+  }
+});
+
+app.delete("/api/daily-points", async (req, res) => {
   const { employeeId, date } = req.query;
+  if (!employeeId) {
+    return res.status(400).json({ error: "employeeId é obrigatório" });
+  }
+
+  // Se quiser filtrar também por data:
+  let where = { employeeId: parseInt(employeeId) };
+  if (date) {
+    const usedDate = new Date(date).toISOString().split("T")[0];
+    where.date = {
+      gte: new Date(`${usedDate}T00:00:00.000Z`),
+      lt: new Date(`${usedDate}T23:59:59.999Z`),
+    };
+  }
 
   try {
-    await prisma.dailyPoint.deleteMany({
-      where: { employeeId: parseInt(employeeId) },
-    });
-    res.json({ message: "Registros de DailyPoints excluídos com sucesso." });
+    const result = await prisma.dailyPoint.deleteMany({ where });
+    res.json({ message: "Registros de DailyPoints excluídos com sucesso.", count: result.count });
   } catch (error) {
     console.error("Erro ao excluir registros de DailyPoints:", error);
     res.status(500).json({ error: "Erro ao excluir registros de DailyPoints", details: error.message });
