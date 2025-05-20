@@ -818,8 +818,8 @@ app.put("/api/daily-points/:id", async (req, res) => {
   }
 });
 
-app.delete("/api/daily-points", async (req, res) => {
-  const { employeeId } = req.query;
+app.delete("/api/daily-points/:id", async (req, res) => {
+  const { employeeId, date } = req.query;
 
   try {
     await prisma.dailyPoint.deleteMany({
