@@ -963,6 +963,43 @@ app.delete("/api/cadastrodesp/:id", async (req, res) => {
   }
 });
 
+// CRUD para valor da máquina por semana
+app.get("/api/machine-week-value", async (req, res) => {
+  const { year, month, week } = req.query;
+  const where = {};
+  if (year) where.year = parseInt(year);
+  if (month) where.month = parseInt(month);
+  if (week) where.week = parseInt(week);
+  try {
+    const values = await prisma.machineWeekValue.findMany({ where });
+    res.json(values);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao buscar valores da máquina", details: error.message });
+  }
+});
+
+app.post("/api/machine-week-value", async (req, res) => {
+  const { year, month, week, value } = req.body;
+  try {
+    // Se já existe, atualiza; senão, cria
+    const existing = await prisma.machineWeekValue.findFirst({ where: { year, month, week } });
+    let result;
+    if (existing) {
+      result = await prisma.machineWeekValue.update({
+        where: { id: existing.id },
+        data: { value },
+      });
+    } else {
+      result = await prisma.machineWeekValue.create({
+        data: { year, month, week, value },
+      });
+    }
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao salvar valor da máquina", details: error.message });
+  }
+});
+
 // ROTA DE TESTE
 // Middleware para servir os arquivos estáticos do React
 app.use(express.static(path.join(__dirname, "dist")));

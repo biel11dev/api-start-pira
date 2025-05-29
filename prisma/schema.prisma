@@ -133,3 +133,13 @@ model CadDespesa {
   createdAt DateTime     @default(now()) // Data de criação do registro
 
 }
+
+model MachineWeekValue {
+  id        Int      @id @default(autoincrement())
+  year      Int
+  month     Int
+  week      Int
+  value     Float
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
