@@ -865,9 +865,9 @@ app.put("/api/daily-points/falta/:id", async (req, res) => {
     const updatedPoint = await prisma.dailyPoint.update({
       where: { id: existingPoint.id },
       data: {
-        entry: entryDateTime || existingPoint.entry,
-        exit: exitDateTime || existingPoint.exit,
-        gateOpen: gateOpenDateTime || existingPoint.gateOpen,
+        entry: null,
+        exit: null,
+        gateOpen: null,
         falta: true,
       },
     });
