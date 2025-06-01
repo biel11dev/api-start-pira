@@ -818,6 +818,73 @@ app.put("/api/daily-points/:id", async (req, res) => {
   }
 });
 
+app.put("/api/daily-points/falta/:id", async (req, res) => {
+  try {
+    const employeeId = parseInt(req.params.id);
+    const { entry, exit, gateOpen, date } = req.body; // Adicione 'date' aqui
+
+    // Use a data enviada pelo front-end, ou a data atual como fallback
+    const usedDate = date ? new Date(date).toISOString().split("T")[0] : new Date().toISOString().split("T")[0];
+
+    const combineDateAndTime = (date, time) => {
+      if (!time) return null;
+      return new Date(`${date}T${time}:00.000Z`);
+    };
+
+    const entryDateTime = combineDateAndTime(usedDate, entry);
+    const exitDateTime = combineDateAndTime(usedDate, exit);
+    const gateOpenDateTime = combineDateAndTime(usedDate, gateOpen);
+
+    let existingPoint = await prisma.dailyPoint.findFirst({
+      where: {
+        employeeId: employeeId,
+        date: {
+          gte: new Date(`${usedDate}T00:00:00.000Z`),
+          lt: new Date(`${usedDate}T23:59:59.999Z`),
+        },
+      },
+    });
+
+    if (!existingPoint) {
+      existingPoint = await prisma.dailyPoint.create({
+        data: {
+          date: new Date(usedDate),
+          entry: entryDateTime,
+          exit: exitDateTime,
+          gateOpen: gateOpenDateTime,
+          employeeId,
+        },
+      });
+
+      return res.status(201).json({
+        message: "Registro criado para o dia informado.",
+        point: existingPoint,
+      });
+    }
+
+    const updatedPoint = await prisma.dailyPoint.update({
+      where: { id: existingPoint.id },
+      data: {
+        entry: entryDateTime || existingPoint.entry,
+        exit: exitDateTime || existingPoint.exit,
+        gateOpen: gateOpenDateTime || existingPoint.gateOpen,
+        falta: true,
+      },
+    });
+
+    res.status(200).json({
+      message: "Registro atualizado com sucesso.",
+      point: updatedPoint,
+    });
+  } catch (error) {
+    console.error("Erro ao atualizar ou criar ponto diário:", error);
+    res.status(500).json({
+      error: "Erro ao atualizar ou criar ponto diário",
+      details: error.message,
+    });
+  }
+});
+
 app.delete("/api/daily-points/:id", async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);

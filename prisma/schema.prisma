@@ -123,6 +123,7 @@ model DailyPoint {
   entry      DateTime? // Horário de entrada
   exit       DateTime? // Horário de saída
   gateOpen   DateTime? // Horário de abertura do portão (opcional)
+  falta      Boolean?  // Falta ou não
   employeeId Int      // Relacionamento com o funcionário
   employee   Employee @relation(fields: [employeeId], references: [id])
 }
