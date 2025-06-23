@@ -125,6 +125,7 @@ app.post("/api/login", async (req, res) => {
       despesas: user.despesas,
       ponto: user.ponto,
       acessos: user.acessos,
+      base_produto: user.base_produto,
     },
   });
 });
@@ -132,11 +133,11 @@ app.post("/api/login", async (req, res) => {
 app.put("/api/users/:id", async (req, res) => {
   try {
     const userId = parseInt(req.params.id);
-    const { caixa, produtos, maquinas, fiado, despesas, ponto, acessos } = req.body;
+    const { caixa, produtos, maquinas, fiado, despesas, ponto, acessos, base_produto } = req.body;  
 
     const updatedUser = await prisma.user.update({
       where: { id: userId },
-      data: { caixa, produtos, maquinas, fiado, despesas, ponto, acessos },
+      data: { caixa, produtos, maquinas, fiado, despesas, ponto, acessos, base_produto },
     });
 
     res.json(updatedUser);
@@ -1125,6 +1126,20 @@ app.post("/api/machine-week-value", async (req, res) => {
   } catch (error) {
     res.status(500).json({ error: "Erro ao salvar valor da máquina", details: error.message });
   }
+});
+
+// ROTA DE CATEGORIA
+app.get("/api/categories", async (req, res) => {
+  const categories = await prisma.category.findMany({
+    include: { products: true },
+  });
+  res.json(categories);
+});
+
+app.post("/api/categories", async (req, res) => {
+  const { name } = req.body;
+  const category = await prisma.category.create({ data: { name } });
+  res.json(category);
 });
 
 // ROTA DE TESTE

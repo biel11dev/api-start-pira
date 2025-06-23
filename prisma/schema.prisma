@@ -70,11 +70,34 @@ model Payment {
   Client    Client   @relation(fields: [clientId], references: [id])
 }
 
+model Category {
+  id        Int       @id @default(autoincrement())
+  name      String
+  products  Product[]
+  prod_estoq Estoque[]
+}
+
 model Product {
   id        Int      @id @default(autoincrement())
   name      String
   quantity  Int
   unit      String
+  categoryId Int?
+  category   Category? @relation(fields: [categoryId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime? @updatedAt
+  value     Float
+  valuecusto Float
+}
+
+model Estoque {
+  id        Int      @id @default(autoincrement())
+  name      String
+  quantity  Int
+  unit      String
+  categoria_Id Int?
+  category   Category? @relation(fields: [categoria_Id], references: [id])
   createdAt DateTime @default(now())
   updatedAt DateTime? @updatedAt
   value     Float
@@ -104,6 +127,7 @@ model User {
   despesas  Boolean?
   ponto     Boolean?
   acessos   Boolean?
+  base_produto Boolean?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
