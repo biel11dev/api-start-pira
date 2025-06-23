@@ -402,6 +402,96 @@ app.delete("/api/daily-readings/:id", async (req, res) => {
 });
 
 // ROTAS DE PRODUTOS (CORREÇÃO DO ERRO `quantity`)
+app.get("/api/estoque_prod", async (req, res) => res.json(await prisma.product.findMany()));
+
+app.get("/api/estoque_prod/:id", async (req, res) => {
+  const product = await prisma.product.findUnique({
+    where: { id: parseInt(req.params.id) },
+  });
+  res.json(product || { error: "Produto não encontrado" });
+});
+
+app.post("/api/estoque_prod", async (req, res) => {
+  try {
+    const { name, quantity, unit, value, valuecusto } = req.body;
+
+    if (!name || !quantity || !unit) {
+      return res.status(400).json({ error: "Todos os campos são obrigatórios." });
+    }
+
+    const parsedQuantity = parseInt(quantity, 10);
+    if (isNaN(parsedQuantity)) {
+      return res.status(400).json({ error: "Quantidade deve ser um número válido." });
+    }
+
+    const parsedValue = parseFloat(value, 10);
+    if (isNaN(parsedValue)) {
+      return res.status(400).json({ error: "Valor deve ser um número válido." });
+    }
+
+    const parsedValueCusto = parseFloat(valuecusto, 10);
+    if (isNaN(parsedValueCusto)) {
+      return res.status(400).json({ error: "Custo deve ser um número válido." });
+    }
+
+    const newProduct = await prisma.product.create({
+      data: { name, quantity: parsedQuantity, unit, value: parsedValue, valuecusto: parsedValueCusto },
+    });
+
+    res.status(201).json(newProduct);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao criar produto", details: error.message });
+  }
+});
+
+app.put("/api/estoque_prod/:id", async (req, res) => {
+  try {
+    const { name, quantity, unit, value, valuecusto } = req.body;
+
+    if (!name || !quantity || !unit) {
+      return res.status(400).json({ error: "Todos os campos são obrigatórios." });
+    }
+
+    const parsedQuantity = parseInt(quantity, 10);
+    if (isNaN(parsedQuantity)) {
+      return res.status(400).json({ error: "Quantidade deve ser um número válido." });
+    }
+
+    const parsedValue = parseFloat(value, 10);
+    if (isNaN(parsedValue)) {
+      return res.status(400).json({ error: "Valor deve ser um número válido." });
+    }
+
+    const parsedValueCusto = parseFloat(valuecusto, 10);
+    if (isNaN(parsedValueCusto)) {
+      return res.status(400).json({ error: "Custo deve ser um número válido." });
+    }
+
+    const updatedProduct = await prisma.product.update({
+      where: { id: parseInt(req.params.id) },
+      data: { name, quantity: parsedQuantity, unit, value: parsedValue, valuecusto: parsedValueCusto },
+    });
+
+    res.json(updatedProduct);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao atualizar produto", details: error.message });
+  }
+});
+
+app.delete("/api/estoque_prod/:id", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) {
+      return res.status(400).json({ error: "ID inválido" });
+    }
+
+    await prisma.product.delete({ where: { id } });
+    res.json({ message: "Produto excluído com sucesso" });
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao excluir produto", details: error.message });
+  }
+});
+// ROTAS DE PRODUTOS (CORREÇÃO DO ERRO `quantity`)
 app.get("/api/products", async (req, res) => res.json(await prisma.product.findMany()));
 
 app.get("/api/products/:id", async (req, res) => {
