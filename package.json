@@ -7,6 +7,9 @@
     "start": "npx prisma generate && node server.js",
     "vercel-build": "npx prisma migrate deploy && npx prisma generate && npx prisma validate"
   },
+  "prisma": {
+    "seed": "node prisma/seed.js"
+  },
   "keywords": [],
   "author": "",
   "license": "ISC",
