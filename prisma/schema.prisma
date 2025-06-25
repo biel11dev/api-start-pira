@@ -128,6 +128,7 @@ model User {
   ponto     Boolean?
   acessos   Boolean?
   base_produto Boolean?
+  pdv Boolean?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
@@ -167,4 +168,28 @@ model MachineWeekValue {
   value     Float
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+model Sale {
+  id             Int        @id @default(autoincrement())
+  total          Float
+  paymentMethod  String
+  customerName   String
+  amountReceived Float
+  change         Float
+  date           DateTime
+  items          SaleItem[]
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+}
+
+model SaleItem {
+  id          Int    @id @default(autoincrement())
+  saleId      Int
+  productId   Int
+  productName String
+  quantity    Int
+  unitPrice   Float
+  total       Float
+  sale        Sale   @relation(fields: [saleId], references: [id])
 }

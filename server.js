@@ -126,6 +126,7 @@ app.post("/api/login", async (req, res) => {
       ponto: user.ponto,
       acessos: user.acessos,
       base_produto: user.base_produto,
+      pdv: user.pdv,
     },
   });
 });
@@ -133,11 +134,11 @@ app.post("/api/login", async (req, res) => {
 app.put("/api/users/:id", async (req, res) => {
   try {
     const userId = parseInt(req.params.id);
-    const { caixa, produtos, maquinas, fiado, despesas, ponto, acessos, base_produto } = req.body;  
+    const { caixa, produtos, maquinas, fiado, despesas, ponto, acessos, base_produto, pdv } = req.body;
 
     const updatedUser = await prisma.user.update({
       where: { id: userId },
-      data: { caixa, produtos, maquinas, fiado, despesas, ponto, acessos, base_produto },
+      data: { caixa, produtos, maquinas, fiado, despesas, ponto, acessos, base_produto, pdv  },
     });
 
     res.json(updatedUser);
@@ -1262,6 +1263,61 @@ app.delete("/api/categories/:id", async (req, res) => {
     res.json({ message: "Categoria excluída com sucesso" });
   } catch (error) {
     res.status(500).json({ error: "Erro ao excluir categoria", details: error.message });
+  }
+});
+
+// Rota para criar uma nova venda (PDV)
+app.post('/api/sales', async (req, res) => {
+  try {
+    const { items, total, paymentMethod, customerName, amountReceived, change, date } = req.body;
+    
+    // Criar registro da venda
+    const sale = await prisma.sale.create({
+      data: {
+        total: parseFloat(total),
+        paymentMethod,
+        customerName,
+        amountReceived: parseFloat(amountReceived) || total,
+        change: parseFloat(change) || 0,
+        date: parseISO(date),
+        items: {
+          create: items.map(item => ({
+            productId: item.id,
+            productName: item.name,
+            quantity: item.quantity,
+            unitPrice: item.price,
+            total: item.price * item.quantity
+          }))
+        }
+      },
+      include: {
+        items: true
+      }
+    });
+
+    res.status(201).json(sale);
+  } catch (error) {
+    console.error('Erro ao criar venda:', error);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
+// Rota para buscar vendas
+app.get('/api/sales', async (req, res) => {
+  try {
+    const sales = await prisma.sale.findMany({
+      include: {
+        items: true
+      },
+      orderBy: {
+        date: 'desc'
+      }
+    });
+    
+    res.json(sales);
+  } catch (error) {
+    console.error('Erro ao buscar vendas:', error);
+    res.status(500).json({ error: 'Erro interno do servidor' });
   }
 });
 
