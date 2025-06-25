@@ -492,18 +492,21 @@ app.delete("/api/estoque_prod/:id", async (req, res) => {
   }
 });
 // ROTAS DE PRODUTOS (CORREÇÃO DO ERRO `quantity`)
-app.get("/api/products", async (req, res) => res.json(await prisma.product.findMany()));
+app.get("/api/products", async (req, res) => res.json(await prisma.product.findMany({
+  include: { category: true }
+})));
 
 app.get("/api/products/:id", async (req, res) => {
   const product = await prisma.product.findUnique({
     where: { id: parseInt(req.params.id) },
+    include: { category: true }
   });
   res.json(product || { error: "Produto não encontrado" });
 });
 
 app.post("/api/products", async (req, res) => {
   try {
-    const { name, quantity, unit, value, valuecusto } = req.body;
+    const { name, quantity, unit, value, valuecusto, categoryId } = req.body;
 
     if (!name || !quantity || !unit) {
       return res.status(400).json({ error: "Todos os campos são obrigatórios." });
@@ -525,7 +528,15 @@ app.post("/api/products", async (req, res) => {
     }
 
     const newProduct = await prisma.product.create({
-      data: { name, quantity: parsedQuantity, unit, value: parsedValue, valuecusto: parsedValueCusto },
+      data: { 
+        name, 
+        quantity: parsedQuantity, 
+        unit, 
+        value: parsedValue, 
+        valuecusto: parsedValueCusto,
+        categoryId: categoryId || null
+      },
+      include: { category: true }
     });
 
     res.status(201).json(newProduct);
@@ -536,7 +547,7 @@ app.post("/api/products", async (req, res) => {
 
 app.put("/api/products/:id", async (req, res) => {
   try {
-    const { name, quantity, unit, value, valuecusto } = req.body;
+    const { name, quantity, unit, value, valuecusto, categoryId } = req.body;
 
     if (!name || !quantity || !unit) {
       return res.status(400).json({ error: "Todos os campos são obrigatórios." });
@@ -559,7 +570,15 @@ app.put("/api/products/:id", async (req, res) => {
 
     const updatedProduct = await prisma.product.update({
       where: { id: parseInt(req.params.id) },
-      data: { name, quantity: parsedQuantity, unit, value: parsedValue, valuecusto: parsedValueCusto },
+      data: { 
+        name, 
+        quantity: parsedQuantity, 
+        unit, 
+        value: parsedValue, 
+        valuecusto: parsedValueCusto,
+        categoryId: categoryId || null
+      },
+      include: { category: true }
     });
 
     res.json(updatedProduct);
@@ -1230,6 +1249,20 @@ app.post("/api/categories", async (req, res) => {
   const { name } = req.body;
   const category = await prisma.category.create({ data: { name } });
   res.json(category);
+});
+
+app.delete("/api/categories/:id", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) {
+      return res.status(400).json({ error: "ID inválido" });
+    }
+
+    await prisma.category.delete({ where: { id } });
+    res.json({ message: "Categoria excluída com sucesso" });
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao excluir categoria", details: error.message });
+  }
 });
 
 // ROTA DE TESTE
