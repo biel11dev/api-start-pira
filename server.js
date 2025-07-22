@@ -1321,6 +1321,94 @@ app.get('/api/sales', async (req, res) => {
   }
 });
 
+app.get('/api/unit-equivalences', async (req, res) => {
+  try {
+    const equivalences = await prisma.unitEquivalence.findMany({
+      orderBy: { unitName: 'asc' }
+    });
+    res.json(equivalences);
+  } catch (error) {
+    console.error('Erro ao buscar equivalências:', error);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
+// POST /api/unit-equivalences - Criar nova equivalência
+app.post('/api/unit-equivalences', async (req, res) => {
+  try {
+    const { unitName, value } = req.body;
+    
+    if (!unitName || !value || value <= 0) {
+      return res.status(400).json({ error: 'Nome da unidade e valor são obrigatórios' });
+    }
+
+    // Verificar se já existe equivalência para esta unidade
+    const existingEquivalence = await prisma.unitEquivalence.findUnique({
+      where: { unitName }
+    });
+
+    if (existingEquivalence) {
+      return res.status(409).json({ error: 'Unidade já possui equivalência definida' });
+    }
+
+    const equivalence = await prisma.unitEquivalence.create({
+      data: { 
+        unitName, 
+        value: parseFloat(value) 
+      }
+    });
+    
+    res.status(201).json(equivalence);
+  } catch (error) {
+    console.error('Erro ao criar equivalência:', error);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
+// PUT /api/unit-equivalences/:unitName - Atualizar equivalência
+app.put('/api/unit-equivalences/:unitName', async (req, res) => {
+  try {
+    const { unitName } = req.params;
+    const { value } = req.body;
+    
+    if (!value || value <= 0) {
+      return res.status(400).json({ error: 'Valor é obrigatório e deve ser maior que zero' });
+    }
+
+    const equivalence = await prisma.unitEquivalence.update({
+      where: { unitName },
+      data: { value: parseFloat(value) }
+    });
+    
+    res.json(equivalence);
+  } catch (error) {
+    if (error.code === 'P2025') {
+      return res.status(404).json({ error: 'Equivalência não encontrada' });
+    }
+    console.error('Erro ao atualizar equivalência:', error);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
+// DELETE /api/unit-equivalences/:unitName - Deletar equivalência
+app.delete('/api/unit-equivalences/:unitName', async (req, res) => {
+  try {
+    const { unitName } = req.params;
+    
+    await prisma.unitEquivalence.delete({
+      where: { unitName }
+    });
+    
+    res.json({ message: 'Equivalência excluída com sucesso' });
+  } catch (error) {
+    if (error.code === 'P2025') {
+      return res.status(404).json({ error: 'Equivalência não encontrada' });
+    }
+    console.error('Erro ao excluir equivalência:', error);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
 // ROTA DE TESTE
 // Middleware para servir os arquivos estáticos do React
 app.use(express.static(path.join(__dirname, "dist")));

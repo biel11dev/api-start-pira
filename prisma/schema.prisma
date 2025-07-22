@@ -193,3 +193,11 @@ model SaleItem {
   total       Float
   sale        Sale   @relation(fields: [saleId], references: [id])
 }
+
+model UnitEquivalence {
+  id        Int      @id @default(autoincrement())
+  unitName  String   @unique
+  value     Float    // Quantas unidades representa (ex: 1 Maço = 20 Unidades)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
