@@ -1409,6 +1409,130 @@ app.delete('/api/unit-equivalences/:unitName', async (req, res) => {
   }
 });
 
+// ROTAS DE DESPESAS PESSOAIS
+app.get("/api/desp-pessoal", async (req, res) => {
+  try {
+    const despesas = await prisma.despPessoal.findMany({
+      include: { categoria: true }
+    });
+    res.json(despesas);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao buscar despesas pessoais", details: error.message });
+  }
+});
+
+app.get("/api/desp-pessoal/:id", async (req, res) => {
+  try {
+    const despesa = await prisma.despPessoal.findUnique({
+      where: { id: parseInt(req.params.id) },
+      include: { categoria: true }
+    });
+    res.json(despesa || { error: "Despesa pessoal não encontrada" });
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao buscar despesa pessoal", details: error.message });
+  }
+});
+
+app.post("/api/desp-pessoal", async (req, res) => {
+  try {
+    const { nomeDespesa, valorDespesa, descDespesa, date, DespesaFixa, categoriaId, tipoMovimento } = req.body;
+    console.log("Dados recebidos:", req.body);
+
+    const parsedDate = new Date(date.replace(" ", "T"));
+
+    const data = { 
+      nomeDespesa, 
+      date: parsedDate, 
+      DespesaFixa,
+      tipoMovimento: tipoMovimento || "GASTO",
+      categoriaId: categoriaId || null
+    };
+    
+    if (valorDespesa !== undefined) data.valorDespesa = valorDespesa;
+    if (descDespesa !== undefined) data.descDespesa = descDespesa;
+
+    const newDespesa = await prisma.despPessoal.create({
+      data,
+      include: { categoria: true }
+    });
+    res.status(201).json(newDespesa);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao criar despesa pessoal", details: error.message });
+  }
+});
+
+app.put("/api/desp-pessoal/:id", async (req, res) => {
+  try {
+    const { nomeDespesa, valorDespesa, descDespesa, categoriaId, tipoMovimento } = req.body;
+    const updatedDespesa = await prisma.despPessoal.update({
+      where: { id: parseInt(req.params.id) },
+      data: { 
+        nomeDespesa, 
+        valorDespesa, 
+        descDespesa,
+        categoriaId: categoriaId || null,
+        tipoMovimento: tipoMovimento || "GASTO"
+      },
+      include: { categoria: true }
+    });
+    res.json(updatedDespesa);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao atualizar despesa pessoal", details: error.message });
+  }
+});
+
+app.delete("/api/desp-pessoal/:id", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) {
+      return res.status(400).json({ error: "ID inválido" });
+    }
+
+    await prisma.despPessoal.delete({ where: { id } });
+    res.json({ message: "Despesa pessoal excluída com sucesso" });
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao excluir despesa pessoal", details: error.message });
+  }
+});
+
+// ROTAS DE CATEGORIAS DE DESPESAS PESSOAIS
+app.get("/api/cat-desp-pessoal", async (req, res) => {
+  try {
+    const categorias = await prisma.catDespPessoal.findMany({
+      include: { DespPessoal: true }
+    });
+    res.json(categorias);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao buscar categorias de despesas pessoais", details: error.message });
+  }
+});
+
+app.post("/api/cat-desp-pessoal", async (req, res) => {
+  try {
+    const { nomeCategoria } = req.body;
+    const newCategoria = await prisma.catDespPessoal.create({
+      data: { nomeCategoria }
+    });
+    res.status(201).json(newCategoria);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao criar categoria de despesa pessoal", details: error.message });
+  }
+});
+
+app.delete("/api/cat-desp-pessoal/:id", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) {
+      return res.status(400).json({ error: "ID inválido" });
+    }
+
+    await prisma.catDespPessoal.delete({ where: { id } });
+    res.json({ message: "Categoria de despesa pessoal excluída com sucesso" });
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao excluir categoria de despesa pessoal", details: error.message });
+  }
+});
+
 // ROTA DE TESTE
 // Middleware para servir os arquivos estáticos do React
 app.use(express.static(path.join(__dirname, "dist")));

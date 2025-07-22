@@ -129,6 +129,7 @@ model User {
   acessos   Boolean?
   base_produto Boolean?
   pdv Boolean?
+  pessoal Boolean?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
@@ -200,4 +201,25 @@ model UnitEquivalence {
   value     Float    // Quantas unidades representa (ex: 1 Maço = 20 Unidades)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+model DespPessoal{
+  id           Int      @id @default(autoincrement())
+  nomeDespesa  String
+  valorDespesa Float?
+  descDespesa  String?
+  date         DateTime
+  DespesaFixa  Boolean
+  tipoMovimento String  @default("GASTO") // "GASTO" ou "GANHO"
+  categoriaId  Int?
+  categoria    CatDespPessoal? @relation(fields: [categoriaId], references: [id])
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime? @updatedAt
+}
+
+model CatDespPessoal{
+  id           Int      @id @default(autoincrement())
+  nomeCategoria  String?
+  createdAt    DateTime @default(now())
+  DespPessoal DespPessoal[]
 }
