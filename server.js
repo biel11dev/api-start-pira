@@ -127,6 +127,7 @@ app.post("/api/login", async (req, res) => {
       acessos: user.acessos,
       base_produto: user.base_produto,
       pdv: user.pdv,
+      pessoal: user.pessoal,
     },
   });
 });
