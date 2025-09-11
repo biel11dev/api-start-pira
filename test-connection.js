@@ -1,25 +1,16 @@
-require("dotenv").config();
-const { PrismaClient } = require("@prisma/client");
+const {Client} = require('@notionhq/client');
 
-const prisma = new PrismaClient();
+const notion = new Client({auth: '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'});
 
-async function testConnection() {
+const retrieveNotionContent = async (block_id) => {
   try {
-    console.log("DATABASE_URL:", process.env.DATABASE_URL);
-    console.log("Tentando conectar ao banco...");
-    
-    await prisma.$connect();
-    console.log("✅ Conexão bem-sucedida!");
-    
-    const result = await prisma.$queryRaw`SELECT 1 as test`;
-    console.log("✅ Query de teste executada:", result);
-    
+    const response = await notion.blocks.retrieve({block_id: block_id, page_size: 50});
+    console.log("Notion content retrieved successfully:", response);
+    return response;
   } catch (error) {
-    console.error("❌ Erro de conexão:", error.message);
-    console.error("Detalhes:", error);
-  } finally {
-    await prisma.$disconnect();
+    console.error("Error retrieving Notion content:", error);
+    throw error;
   }
-}
+};
 
-testConnection();
+retrieveNotionContent('133f158dc10c80549dd9d90ca9ba62db');

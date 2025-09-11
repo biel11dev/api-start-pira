@@ -402,10 +402,10 @@ app.delete("/api/daily-readings/:id", async (req, res) => {
 });
 
 // ROTAS DE PRODUTOS (CORREÇÃO DO ERRO `quantity`)
-app.get("/api/estoque_prod", async (req, res) => res.json(await prisma.product.findMany()));
+app.get("/api/estoque_prod", async (req, res) => res.json(await prisma.estoque.findMany()));
 
 app.get("/api/estoque_prod/:id", async (req, res) => {
-  const product = await prisma.product.findUnique({
+  const product = await prisma.estoque.findUnique({
     where: { id: parseInt(req.params.id) },
   });
   res.json(product || { error: "Produto não encontrado" });
@@ -434,7 +434,7 @@ app.post("/api/estoque_prod", async (req, res) => {
       return res.status(400).json({ error: "Custo deve ser um número válido." });
     }
 
-    const newProduct = await prisma.product.create({
+    const newProduct = await prisma.estoque.create({
       data: { name, quantity: parsedQuantity, unit, value: parsedValue, valuecusto: parsedValueCusto },
     });
 
@@ -467,7 +467,7 @@ app.put("/api/estoque_prod/:id", async (req, res) => {
       return res.status(400).json({ error: "Custo deve ser um número válido." });
     }
 
-    const updatedProduct = await prisma.product.update({
+    const updatedProduct = await prisma.estoque.update({
       where: { id: parseInt(req.params.id) },
       data: { name, quantity: parsedQuantity, unit, value: parsedValue, valuecusto: parsedValueCusto },
     });
@@ -485,7 +485,7 @@ app.delete("/api/estoque_prod/:id", async (req, res) => {
       return res.status(400).json({ error: "ID inválido" });
     }
 
-    await prisma.product.delete({ where: { id } });
+    await prisma.estoque.delete({ where: { id } });
     res.json({ message: "Produto excluído com sucesso" });
   } catch (error) {
     res.status(500).json({ error: "Erro ao excluir produto", details: error.message });
@@ -1231,6 +1231,49 @@ app.post("/api/categories", async (req, res) => {
   const category = await prisma.category.create({ data: { name } });
   res.json(category);
 });
+//ROTA PESSOAL API EXTERNA NOTION
+
+// Exemplo de consumo de API externa com fetch
+// app.get("/api/dados/notion", async (req, res) => {
+//   try {
+//     const response = await fetch(`https://api.notion.com/v1/databases/${process.env.DATABASE_NOTION}/query`, {
+//       method: 'POST',
+//       headers: {
+//         'Authorization': `Bearer ${process.env.CHAVE_NOTION}`,
+//         'Content-Type': 'application/json',
+//         'Notion-Version': '2022-06-28'
+//       }
+//     });
+
+//     if (!response.ok) {
+//       throw new Error(`HTTP error! status: ${response.status}`);
+//     }
+    
+//     const data = await response.json();
+//     res.json(data);
+//   } catch (error) {
+//     res.status(500).json({ error: "Erro ao consumir API externa", details: error.message });
+//   }
+// });
+
+// // Exemplo com POST para API externa
+// app.post("/api/dados/notion", async (req, res) => {
+//   try {
+//     const response = await fetch(`https://api.notion.com/v1/pages`, {
+//       method: 'POST',
+//       headers: {
+//         'Content-Type': 'application/json',
+//         'Authorization': `Bearer ${process.env.CHAVE_NOTION}`
+//       },
+//       body: JSON.stringify(req.body)
+//     });
+    
+//     const data = await response.json();
+//     res.json(data);
+//   } catch (error) {
+//     res.status(500).json({ error: "Erro ao enviar dados", details: error.message });
+//   }
+// });
 
 // ROTA DE TESTE
 // Middleware para servir os arquivos estáticos do React
