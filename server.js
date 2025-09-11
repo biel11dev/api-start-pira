@@ -126,6 +126,8 @@ app.post("/api/login", async (req, res) => {
       ponto: user.ponto,
       acessos: user.acessos,
       base_produto: user.base_produto,
+      pdv: user.pdv,
+      pessoal: user.pessoal,
     },
   });
 });
@@ -133,11 +135,11 @@ app.post("/api/login", async (req, res) => {
 app.put("/api/users/:id", async (req, res) => {
   try {
     const userId = parseInt(req.params.id);
-    const { caixa, produtos, maquinas, fiado, despesas, ponto, acessos, base_produto } = req.body;  
+    const { caixa, produtos, maquinas, fiado, despesas, ponto, acessos, base_produto, pdv } = req.body;
 
     const updatedUser = await prisma.user.update({
       where: { id: userId },
-      data: { caixa, produtos, maquinas, fiado, despesas, ponto, acessos, base_produto },
+      data: { caixa, produtos, maquinas, fiado, despesas, ponto, acessos, base_produto, pdv  },
     });
 
     res.json(updatedUser);
@@ -492,18 +494,21 @@ app.delete("/api/estoque_prod/:id", async (req, res) => {
   }
 });
 // ROTAS DE PRODUTOS (CORREÇÃO DO ERRO `quantity`)
-app.get("/api/products", async (req, res) => res.json(await prisma.product.findMany()));
+app.get("/api/products", async (req, res) => res.json(await prisma.product.findMany({
+  include: { category: true }
+})));
 
 app.get("/api/products/:id", async (req, res) => {
   const product = await prisma.product.findUnique({
     where: { id: parseInt(req.params.id) },
+    include: { category: true }
   });
   res.json(product || { error: "Produto não encontrado" });
 });
 
 app.post("/api/products", async (req, res) => {
   try {
-    const { name, quantity, unit, value, valuecusto } = req.body;
+    const { name, quantity, unit, value, valuecusto, categoryId } = req.body;
 
     if (!name || !quantity || !unit) {
       return res.status(400).json({ error: "Todos os campos são obrigatórios." });
@@ -525,7 +530,15 @@ app.post("/api/products", async (req, res) => {
     }
 
     const newProduct = await prisma.product.create({
-      data: { name, quantity: parsedQuantity, unit, value: parsedValue, valuecusto: parsedValueCusto },
+      data: { 
+        name, 
+        quantity: parsedQuantity, 
+        unit, 
+        value: parsedValue, 
+        valuecusto: parsedValueCusto,
+        categoryId: categoryId || null
+      },
+      include: { category: true }
     });
 
     res.status(201).json(newProduct);
@@ -536,7 +549,7 @@ app.post("/api/products", async (req, res) => {
 
 app.put("/api/products/:id", async (req, res) => {
   try {
-    const { name, quantity, unit, value, valuecusto } = req.body;
+    const { name, quantity, unit, value, valuecusto, categoryId } = req.body;
 
     if (!name || !quantity || !unit) {
       return res.status(400).json({ error: "Todos os campos são obrigatórios." });
@@ -559,7 +572,15 @@ app.put("/api/products/:id", async (req, res) => {
 
     const updatedProduct = await prisma.product.update({
       where: { id: parseInt(req.params.id) },
-      data: { name, quantity: parsedQuantity, unit, value: parsedValue, valuecusto: parsedValueCusto },
+      data: { 
+        name, 
+        quantity: parsedQuantity, 
+        unit, 
+        value: parsedValue, 
+        valuecusto: parsedValueCusto,
+        categoryId: categoryId || null
+      },
+      include: { category: true }
     });
 
     res.json(updatedProduct);
@@ -1274,6 +1295,287 @@ app.post("/api/categories", async (req, res) => {
 //     res.status(500).json({ error: "Erro ao enviar dados", details: error.message });
 //   }
 // });
+
+app.delete("/api/categories/:id", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) {
+      return res.status(400).json({ error: "ID inválido" });
+    }
+
+    await prisma.category.delete({ where: { id } });
+    res.json({ message: "Categoria excluída com sucesso" });
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao excluir categoria", details: error.message });
+  }
+});
+
+// Rota para criar uma nova venda (PDV)
+app.post('/api/sales', async (req, res) => {
+  try {
+    const { items, total, paymentMethod, customerName, amountReceived, change, date } = req.body;
+    
+    // Criar registro da venda
+    const sale = await prisma.sale.create({
+      data: {
+        total: parseFloat(total),
+        paymentMethod,
+        customerName,
+        amountReceived: parseFloat(amountReceived) || total,
+        change: parseFloat(change) || 0,
+        date: parseISO(date),
+        items: {
+          create: items.map(item => ({
+            productId: item.id,
+            productName: item.name,
+            quantity: item.quantity,
+            unitPrice: item.price,
+            total: item.price * item.quantity
+          }))
+        }
+      },
+      include: {
+        items: true
+      }
+    });
+
+    res.status(201).json(sale);
+  } catch (error) {
+    console.error('Erro ao criar venda:', error);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
+// Rota para buscar vendas
+app.get('/api/sales', async (req, res) => {
+  try {
+    const sales = await prisma.sale.findMany({
+      include: {
+        items: true
+      },
+      orderBy: {
+        date: 'desc'
+      }
+    });
+    
+    res.json(sales);
+  } catch (error) {
+    console.error('Erro ao buscar vendas:', error);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
+app.get('/api/unit-equivalences', async (req, res) => {
+  try {
+    const equivalences = await prisma.unitEquivalence.findMany({
+      orderBy: { unitName: 'asc' }
+    });
+    res.json(equivalences);
+  } catch (error) {
+    console.error('Erro ao buscar equivalências:', error);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
+// POST /api/unit-equivalences - Criar nova equivalência
+app.post('/api/unit-equivalences', async (req, res) => {
+  try {
+    const { unitName, value } = req.body;
+    
+    if (!unitName || !value || value <= 0) {
+      return res.status(400).json({ error: 'Nome da unidade e valor são obrigatórios' });
+    }
+
+    // Verificar se já existe equivalência para esta unidade
+    const existingEquivalence = await prisma.unitEquivalence.findUnique({
+      where: { unitName }
+    });
+
+    if (existingEquivalence) {
+      return res.status(409).json({ error: 'Unidade já possui equivalência definida' });
+    }
+
+    const equivalence = await prisma.unitEquivalence.create({
+      data: { 
+        unitName, 
+        value: parseFloat(value) 
+      }
+    });
+    
+    res.status(201).json(equivalence);
+  } catch (error) {
+    console.error('Erro ao criar equivalência:', error);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
+// PUT /api/unit-equivalences/:unitName - Atualizar equivalência
+app.put('/api/unit-equivalences/:unitName', async (req, res) => {
+  try {
+    const { unitName } = req.params;
+    const { value } = req.body;
+    
+    if (!value || value <= 0) {
+      return res.status(400).json({ error: 'Valor é obrigatório e deve ser maior que zero' });
+    }
+
+    const equivalence = await prisma.unitEquivalence.update({
+      where: { unitName },
+      data: { value: parseFloat(value) }
+    });
+    
+    res.json(equivalence);
+  } catch (error) {
+    if (error.code === 'P2025') {
+      return res.status(404).json({ error: 'Equivalência não encontrada' });
+    }
+    console.error('Erro ao atualizar equivalência:', error);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
+// DELETE /api/unit-equivalences/:unitName - Deletar equivalência
+app.delete('/api/unit-equivalences/:unitName', async (req, res) => {
+  try {
+    const { unitName } = req.params;
+    
+    await prisma.unitEquivalence.delete({
+      where: { unitName }
+    });
+    
+    res.json({ message: 'Equivalência excluída com sucesso' });
+  } catch (error) {
+    if (error.code === 'P2025') {
+      return res.status(404).json({ error: 'Equivalência não encontrada' });
+    }
+    console.error('Erro ao excluir equivalência:', error);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
+// ROTAS DE DESPESAS PESSOAIS
+app.get("/api/desp-pessoal", async (req, res) => {
+  try {
+    const despesas = await prisma.despPessoal.findMany({
+      include: { categoria: true }
+    });
+    res.json(despesas);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao buscar despesas pessoais", details: error.message });
+  }
+});
+
+app.get("/api/desp-pessoal/:id", async (req, res) => {
+  try {
+    const despesa = await prisma.despPessoal.findUnique({
+      where: { id: parseInt(req.params.id) },
+      include: { categoria: true }
+    });
+    res.json(despesa || { error: "Despesa pessoal não encontrada" });
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao buscar despesa pessoal", details: error.message });
+  }
+});
+
+app.post("/api/desp-pessoal", async (req, res) => {
+  try {
+    const { nomeDespesa, valorDespesa, descDespesa, date, DespesaFixa, categoriaId, tipoMovimento } = req.body;
+    console.log("Dados recebidos:", req.body);
+
+    const parsedDate = new Date(date.replace(" ", "T"));
+
+    const data = { 
+      nomeDespesa, 
+      date: parsedDate, 
+      DespesaFixa,
+      tipoMovimento: tipoMovimento || "GASTO",
+      categoriaId: categoriaId || null
+    };
+    
+    if (valorDespesa !== undefined) data.valorDespesa = valorDespesa;
+    if (descDespesa !== undefined) data.descDespesa = descDespesa;
+
+    const newDespesa = await prisma.despPessoal.create({
+      data,
+      include: { categoria: true }
+    });
+    res.status(201).json(newDespesa);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao criar despesa pessoal", details: error.message });
+  }
+});
+
+app.put("/api/desp-pessoal/:id", async (req, res) => {
+  try {
+    const { nomeDespesa, valorDespesa, descDespesa, categoriaId, tipoMovimento } = req.body;
+    const updatedDespesa = await prisma.despPessoal.update({
+      where: { id: parseInt(req.params.id) },
+      data: { 
+        nomeDespesa, 
+        valorDespesa, 
+        descDespesa,
+        categoriaId: categoriaId || null,
+        tipoMovimento: tipoMovimento || "GASTO"
+      },
+      include: { categoria: true }
+    });
+    res.json(updatedDespesa);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao atualizar despesa pessoal", details: error.message });
+  }
+});
+
+app.delete("/api/desp-pessoal/:id", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) {
+      return res.status(400).json({ error: "ID inválido" });
+    }
+
+    await prisma.despPessoal.delete({ where: { id } });
+    res.json({ message: "Despesa pessoal excluída com sucesso" });
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao excluir despesa pessoal", details: error.message });
+  }
+});
+
+// ROTAS DE CATEGORIAS DE DESPESAS PESSOAIS
+app.get("/api/cat-desp-pessoal", async (req, res) => {
+  try {
+    const categorias = await prisma.catDespPessoal.findMany({
+      include: { DespPessoal: true }
+    });
+    res.json(categorias);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao buscar categorias de despesas pessoais", details: error.message });
+  }
+});
+
+app.post("/api/cat-desp-pessoal", async (req, res) => {
+  try {
+    const { nomeCategoria } = req.body;
+    const newCategoria = await prisma.catDespPessoal.create({
+      data: { nomeCategoria }
+    });
+    res.status(201).json(newCategoria);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao criar categoria de despesa pessoal", details: error.message });
+  }
+});
+
+app.delete("/api/cat-desp-pessoal/:id", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) {
+      return res.status(400).json({ error: "ID inválido" });
+    }
+
+    await prisma.catDespPessoal.delete({ where: { id } });
+    res.json({ message: "Categoria de despesa pessoal excluída com sucesso" });
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao excluir categoria de despesa pessoal", details: error.message });
+  }
+});
 
 // ROTA DE TESTE
 // Middleware para servir os arquivos estáticos do React
