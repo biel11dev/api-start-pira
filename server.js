@@ -494,18 +494,42 @@ app.delete("/api/estoque_prod/:id", async (req, res) => {
   }
 });
 // ROTAS DE PRODUTOS (CORREÇÃO DO ERRO `quantity`)
-app.get("/api/products", async (req, res) => res.json(await prisma.product.findMany({
-  include: { category: true }
-})));
-
-app.get("/api/products/:id", async (req, res) => {
-  const product = await prisma.product.findUnique({
-    where: { id: parseInt(req.params.id) },
-    include: { category: true }
-  });
-  res.json(product || { error: "Produto não encontrado" });
+app.get("/api/products", async (req, res) => {
+  try {
+    const products = await prisma.product.findMany({
+      include: { 
+        category: {
+          include: {
+            parent: true
+          }
+        }
+      }
+    });
+    res.json(products);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao buscar produtos", details: error.message });
+  }
 });
 
+app.get("/api/products/:id", async (req, res) => {
+  try {
+    const product = await prisma.product.findUnique({
+      where: { id: parseInt(req.params.id) },
+      include: { 
+        category: {
+          include: {
+            parent: true
+          }
+        }
+      }
+    });
+    res.json(product || { error: "Produto não encontrado" });
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao buscar produto", details: error.message });
+  }
+});
+
+// Atualizar POST e PUT de produtos para incluir categoria com parent no retorno
 app.post("/api/products", async (req, res) => {
   try {
     const { name, quantity, unit, value, valuecusto, categoryId } = req.body;
@@ -538,7 +562,13 @@ app.post("/api/products", async (req, res) => {
         valuecusto: parsedValueCusto,
         categoryId: categoryId || null
       },
-      include: { category: true }
+      include: { 
+        category: {
+          include: {
+            parent: true
+          }
+        }
+      }
     });
 
     res.status(201).json(newProduct);
@@ -580,7 +610,13 @@ app.put("/api/products/:id", async (req, res) => {
         valuecusto: parsedValueCusto,
         categoryId: categoryId || null
       },
-      include: { category: true }
+      include: { 
+        category: {
+          include: {
+            parent: true
+          }
+        }
+      }
     });
 
     res.json(updatedProduct);
@@ -1239,68 +1275,167 @@ app.post("/api/machine-week-value", async (req, res) => {
   }
 });
 
-// ROTA DE CATEGORIA
+// GET /api/categories - Listar categorias com subcategorias
 app.get("/api/categories", async (req, res) => {
-  const categories = await prisma.category.findMany({
-    include: { products: true },
-  });
-  res.json(categories);
+  try {
+    const categories = await prisma.category.findMany({
+      where: { parentId: null }, // Só categorias principais
+      include: {
+        subcategories: {
+          include: {
+            products: true,
+            prod_estoq: true
+          }
+        },
+        products: true,
+        prod_estoq: true
+      },
+    });
+    res.json(categories);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao buscar categorias", details: error.message });
+  }
 });
 
+// GET /api/categories/all - Listar todas as categorias (incluindo subcategorias)
+app.get("/api/categories/all", async (req, res) => {
+  try {
+    const categories = await prisma.category.findMany({
+      include: {
+        parent: true,
+        subcategories: true,
+        products: true,
+        prod_estoq: true
+      },
+    });
+    res.json(categories);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao buscar todas as categorias", details: error.message });
+  }
+});
+
+// POST /api/categories - Criar categoria ou subcategoria
 app.post("/api/categories", async (req, res) => {
-  const { name } = req.body;
-  const category = await prisma.category.create({ data: { name } });
-  res.json(category);
+  try {
+    const { name, parentId } = req.body;
+    
+    if (!name || name.trim() === '') {
+      return res.status(400).json({ error: "Nome da categoria é obrigatório" });
+    }
+
+    const data = { name: name.trim() };
+    if (parentId && !isNaN(parseInt(parentId))) {
+      // Verificar se a categoria pai existe
+      const parentCategory = await prisma.category.findUnique({
+        where: { id: parseInt(parentId) }
+      });
+      
+      if (!parentCategory) {
+        return res.status(404).json({ error: "Categoria pai não encontrada" });
+      }
+      
+      data.parentId = parseInt(parentId);
+    }
+
+    const category = await prisma.category.create({ 
+      data,
+      include: {
+        parent: true,
+        subcategories: true
+      }
+    });
+    
+    res.status(201).json(category);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao criar categoria", details: error.message });
+  }
 });
-//ROTA PESSOAL API EXTERNA NOTION
 
-// Exemplo de consumo de API externa com fetch
-// app.get("/api/dados/notion", async (req, res) => {
-//   try {
-//     const response = await fetch(`https://api.notion.com/v1/databases/${process.env.DATABASE_NOTION}/query`, {
-//       method: 'POST',
-//       headers: {
-//         'Authorization': `Bearer ${process.env.CHAVE_NOTION}`,
-//         'Content-Type': 'application/json',
-//         'Notion-Version': '2022-06-28'
-//       }
-//     });
-
-//     if (!response.ok) {
-//       throw new Error(`HTTP error! status: ${response.status}`);
-//     }
+// PUT /api/categories/:id - Atualizar categoria
+app.put("/api/categories/:id", async (req, res) => {
+  try {
+    const { name, parentId } = req.body;
+    const categoryId = parseInt(req.params.id);
     
-//     const data = await response.json();
-//     res.json(data);
-//   } catch (error) {
-//     res.status(500).json({ error: "Erro ao consumir API externa", details: error.message });
-//   }
-// });
+    if (isNaN(categoryId)) {
+      return res.status(400).json({ error: "ID da categoria inválido" });
+    }
 
-// // Exemplo com POST para API externa
-// app.post("/api/dados/notion", async (req, res) => {
-//   try {
-//     const response = await fetch(`https://api.notion.com/v1/pages`, {
-//       method: 'POST',
-//       headers: {
-//         'Content-Type': 'application/json',
-//         'Authorization': `Bearer ${process.env.CHAVE_NOTION}`
-//       },
-//       body: JSON.stringify(req.body)
-//     });
+    if (!name || name.trim() === '') {
+      return res.status(400).json({ error: "Nome da categoria é obrigatório" });
+    }
+
+    const data = { name: name.trim() };
     
-//     const data = await response.json();
-//     res.json(data);
-//   } catch (error) {
-//     res.status(500).json({ error: "Erro ao enviar dados", details: error.message });
-//   }
-// });
+    if (parentId !== undefined) {
+      if (parentId === null || parentId === '') {
+        data.parentId = null;
+      } else {
+        const parentIdNum = parseInt(parentId);
+        if (parentIdNum === categoryId) {
+          return res.status(400).json({ error: "Uma categoria não pode ser pai de si mesma" });
+        }
+        
+        // Verificar se a categoria pai existe
+        const parentCategory = await prisma.category.findUnique({
+          where: { id: parentIdNum }
+        });
+        
+        if (!parentCategory) {
+          return res.status(404).json({ error: "Categoria pai não encontrada" });
+        }
+        
+        data.parentId = parentIdNum;
+      }
+    }
 
+    const updatedCategory = await prisma.category.update({
+      where: { id: categoryId },
+      data,
+      include: {
+        parent: true,
+        subcategories: true
+      }
+    });
+
+    res.json(updatedCategory);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao atualizar categoria", details: error.message });
+  }
+});
+
+// DELETE /api/categories/:id - Excluir categoria (substitua a existente)
 app.delete("/api/categories/:id", async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) {
       return res.status(400).json({ error: "ID inválido" });
+    }
+
+    // Verificar se a categoria tem subcategorias
+    const subcategories = await prisma.category.findMany({
+      where: { parentId: id }
+    });
+
+    if (subcategories.length > 0) {
+      return res.status(400).json({ 
+        error: "Não é possível excluir uma categoria que possui subcategorias. Exclua primeiro as subcategorias." 
+      });
+    }
+
+    // Verificar se a categoria tem produtos associados
+    const productsCount = await prisma.product.count({
+      where: { categoryId: id }
+    });
+
+    const estoqueCount = await prisma.estoque.count({
+      where: { categoria_Id: id }
+    });
+
+    if (productsCount > 0 || estoqueCount > 0) {
+      return res.status(400).json({ 
+        error: "Não é possível excluir uma categoria que possui produtos associados." 
+      });
     }
 
     await prisma.category.delete({ where: { id } });

@@ -71,10 +71,13 @@ model Payment {
 }
 
 model Category {
-  id        Int       @id @default(autoincrement())
-  name      String
-  products  Product[]
-  prod_estoq Estoque[]
+  id             Int         @id @default(autoincrement())
+  name           String
+  parentId       Int?        // Campo para subcategoria
+  parent         Category?   @relation("CategorySubcategories", fields: [parentId], references: [id])
+  subcategories  Category[]  @relation("CategorySubcategories")
+  products       Product[]
+  prod_estoq     Estoque[]
 }
 
 model Product {
