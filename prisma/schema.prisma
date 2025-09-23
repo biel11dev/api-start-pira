@@ -43,7 +43,7 @@ model DailyReading {
 
 model Despesa {
   id           Int      @id @default(autoincrement())
-  nomeDespesa  String
+  nomeDespesa  String?
   valorDespesa Float?
   descDespesa  String?
   date         DateTime

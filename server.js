@@ -717,10 +717,27 @@ app.post("/api/despesas", async (req, res) => {
 app.put("/api/despesas/:id", async (req, res) => {
   try {
     const { nomeDespesa, valorDespesa, descDespesa } = req.body;
+    
+    // Criar objeto de dados dinamicamente apenas com campos não nulos
+    const updateData = {};
+    
+    if (nomeDespesa !== null && nomeDespesa !== undefined) {
+      updateData.nomeDespesa = nomeDespesa;
+    }
+    
+    if (valorDespesa !== null && valorDespesa !== undefined) {
+      updateData.valorDespesa = valorDespesa;
+    }
+    
+    if (descDespesa !== null && descDespesa !== undefined) {
+      updateData.descDespesa = descDespesa;
+    }
+    
     const updatedDespesa = await prisma.despesa.update({
       where: { id: parseInt(req.params.id) },
-      data: { nomeDespesa, valorDespesa, descDespesa },
+      data: updateData,
     });
+    
     res.json(updatedDespesa);
   } catch (error) {
     res.status(500).json({ error: "Erro ao atualizar despesa", details: error.message });
