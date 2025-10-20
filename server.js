@@ -1715,6 +1715,19 @@ app.post("/api/cat-desp-pessoal", async (req, res) => {
   }
 });
 
+app.put("/api/cat-desp-pessoal/:id", async (req, res) => {
+  try {
+    const { nomeCategoria } = req.body;
+    const updatedCategoria = await prisma.catDespPessoal.update({
+      where: { id: parseInt(req.params.id) },
+      data: { nomeCategoria }
+    });
+    res.json(updatedCategoria);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao atualizar categoria de despesa pessoal", details: error.message });
+  }
+});
+
 app.delete("/api/cat-desp-pessoal/:id", async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
