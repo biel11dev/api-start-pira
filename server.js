@@ -765,10 +765,16 @@ app.get("/api/employees", async (req, res) => {
       include: { points: true }, // Inclui os pontos diários relacionados
     });
 
-    // Adiciona um valor padrão para dailyHours se estiver null
+    // Adiciona valores padrão para campos se estiverem null
     const employeesWithDefaults = employees.map((employee) => ({
       ...employee,
-      carga: employee.carga || 8, // Define 8 como valor padrão
+      carga: employee.carga || 8,
+      valorHora: employee.valorHora || 0,
+      metaHoras: employee.metaHoras || null,
+      bonificacao: employee.bonificacao || null,
+      contato: employee.contato || null,
+      dataEntrada: employee.dataEntrada || null,
+      ativo: employee.ativo !== undefined ? employee.ativo : true,
     }));
 
     res.json(employeesWithDefaults);
@@ -794,9 +800,30 @@ app.get("/api/employees/:id", async (req, res) => {
 
 app.post("/api/employees", async (req, res) => {
   try {
-    const { name, position, carga = 8 } = req.body; // Define 8 como valor padrão
+    const { 
+      name, 
+      position, 
+      carga = 8,
+      valorHora = 0, 
+      metaHoras = null, 
+      bonificacao = null,
+      contato = null,
+      dataEntrada = null,
+      ativo = true
+    } = req.body;
+    
     const newEmployee = await prisma.employee.create({
-      data: { name, position, carga },
+      data: { 
+        name, 
+        position,
+        carga: parseInt(carga) || 8,
+        valorHora: parseFloat(valorHora) || 0,
+        metaHoras: metaHoras ? parseFloat(metaHoras) : null,
+        bonificacao: bonificacao ? parseFloat(bonificacao) : null,
+        contato,
+        dataEntrada: dataEntrada ? new Date(dataEntrada) : null,
+        ativo
+      },
     });
     res.status(201).json(newEmployee);
   } catch (error) {
@@ -806,10 +833,33 @@ app.post("/api/employees", async (req, res) => {
 
 app.put("/api/employees/:id", async (req, res) => {
   try {
-    const { name, position, carga } = req.body;
+    const { 
+      name, 
+      position,
+      carga,
+      valorHora, 
+      metaHoras, 
+      bonificacao,
+      contato,
+      dataEntrada,
+      ativo
+    } = req.body;
+    
+    // Construir objeto de atualização dinamicamente
+    const updateData = {};
+    if (name !== undefined) updateData.name = name;
+    if (position !== undefined) updateData.position = position;
+    if (carga !== undefined) updateData.carga = parseInt(carga) || 8;
+    if (valorHora !== undefined) updateData.valorHora = parseFloat(valorHora) || 0;
+    if (metaHoras !== undefined) updateData.metaHoras = metaHoras ? parseFloat(metaHoras) : null;
+    if (bonificacao !== undefined) updateData.bonificacao = bonificacao ? parseFloat(bonificacao) : null;
+    if (contato !== undefined) updateData.contato = contato;
+    if (dataEntrada !== undefined) updateData.dataEntrada = dataEntrada ? new Date(dataEntrada) : null;
+    if (ativo !== undefined) updateData.ativo = ativo;
+    
     const updatedEmployee = await prisma.employee.update({
       where: { id: parseInt(req.params.id) },
-      data: { name, position, carga },
+      data: updateData,
     });
     res.json(updatedEmployee);
   } catch (error) {

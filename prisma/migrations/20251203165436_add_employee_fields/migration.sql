@@ -1,0 +1,7 @@
+-- AlterTable
+ALTER TABLE "Employee" ADD COLUMN     "ativo" BOOLEAN NOT NULL DEFAULT true,
+ADD COLUMN     "bonificacao" DOUBLE PRECISION,
+ADD COLUMN     "contato" TEXT,
+ADD COLUMN     "dataEntrada" TIMESTAMP(3),
+ADD COLUMN     "metaHoras" DOUBLE PRECISION,
+ADD COLUMN     "valorHora" DOUBLE PRECISION NOT NULL DEFAULT 0;

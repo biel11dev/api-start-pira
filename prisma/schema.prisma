@@ -138,12 +138,18 @@ model User {
 }
 
 model Employee {
-  id        Int          @id @default(autoincrement())
-  name      String       // Nome do funcionário
-  position  String?      // Cargo do funcionário (opcional)
-  carga     Int          @default(0)
-  createdAt DateTime     @default(now()) // Data de criação do registro
-  points    DailyPoint[] // Relacionamento com os pontos diários
+  id          Int          @id @default(autoincrement())
+  name        String       // Nome do funcionário
+  position    String?      // Cargo do funcionário (opcional)
+  carga       Int          @default(0) // Mantido para compatibilidade
+  valorHora   Float        @default(0) // Valor por hora do funcionário
+  metaHoras   Float?       // Meta de horas semanais para bonificação
+  bonificacao Float?       // Valor da bonificação semanal
+  contato     String?      // Contato do funcionário
+  dataEntrada DateTime?    // Data de entrada do funcionário
+  ativo       Boolean      @default(true) // Status do funcionário
+  createdAt   DateTime     @default(now()) // Data de criação do registro
+  points      DailyPoint[] // Relacionamento com os pontos diários
 }
 
 model DailyPoint {
