@@ -85,10 +85,10 @@ Equipe Start Pira`,
 
 // ROTAS DE AUTENTICAÇÃO
 app.post("/api/register", async (req, res) => {
-  const { username, password } = req.body;
+  const { username, password, name } = req.body;
   try {
     const hashedPassword = await bcrypt.hash(password, 10);
-    const newUser = await prisma.user.create({ data: { username, password: hashedPassword } });
+    const newUser = await prisma.user.create({ data: { username, password: hashedPassword, name: name || null } });
     res.json(newUser);
   } catch (error) {
     console.log("Dados recebidos:", req.body); // Log dos dados recebidos
@@ -117,6 +117,8 @@ app.post("/api/login", async (req, res) => {
   // Inclua as permissões do usuário no retorno
   res.json({
     token,
+    username: user.username,
+    name: user.name,
     permissions: {
       caixa: user.caixa,
       produtos: user.produtos,
@@ -135,11 +137,14 @@ app.post("/api/login", async (req, res) => {
 app.put("/api/users/:id", async (req, res) => {
   try {
     const userId = parseInt(req.params.id);
-    const { caixa, produtos, maquinas, fiado, despesas, ponto, acessos, base_produto, pdv } = req.body;
+    const { name, caixa, produtos, maquinas, fiado, despesas, ponto, acessos, base_produto, pdv } = req.body;
+
+    const updateData = { caixa, produtos, maquinas, fiado, despesas, ponto, acessos, base_produto, pdv };
+    if (name !== undefined) updateData.name = name;
 
     const updatedUser = await prisma.user.update({
       where: { id: userId },
-      data: { caixa, produtos, maquinas, fiado, despesas, ponto, acessos, base_produto, pdv  },
+      data: updateData,
     });
 
     res.json(updatedUser);
