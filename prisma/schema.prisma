@@ -223,6 +223,7 @@ model DespPessoal{
   tipoMovimento String  @default("GASTO") // "GASTO" ou "GANHO"
   categoriaId  Int?
   categoria    CatDespPessoal? @relation(fields: [categoriaId], references: [id])
+  valeRelacionadoId Int? // ID do registro relacionado (GASTO <-> GANHO/VALE)
   createdAt    DateTime @default(now())
   updatedAt    DateTime? @updatedAt
 }

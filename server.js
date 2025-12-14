@@ -1686,7 +1686,7 @@ app.get("/api/desp-pessoal/:id", async (req, res) => {
 
 app.post("/api/desp-pessoal", async (req, res) => {
   try {
-    const { nomeDespesa, valorDespesa, descDespesa, date, DespesaFixa, categoriaId, tipoMovimento } = req.body;
+    const { nomeDespesa, valorDespesa, descDespesa, date, DespesaFixa, categoriaId, tipoMovimento, valeRelacionadoId } = req.body;
     console.log("Dados recebidos:", req.body);
 
     const parsedDate = new Date(date.replace(" ", "T"));
@@ -1701,6 +1701,7 @@ app.post("/api/desp-pessoal", async (req, res) => {
     
     if (valorDespesa !== undefined) data.valorDespesa = valorDespesa;
     if (descDespesa !== undefined) data.descDespesa = descDespesa;
+    if (valeRelacionadoId !== undefined) data.valeRelacionadoId = valeRelacionadoId;
 
     const newDespesa = await prisma.despPessoal.create({
       data,
@@ -1714,16 +1715,19 @@ app.post("/api/desp-pessoal", async (req, res) => {
 
 app.put("/api/desp-pessoal/:id", async (req, res) => {
   try {
-    const { nomeDespesa, valorDespesa, descDespesa, categoriaId, tipoMovimento } = req.body;
+    const { nomeDespesa, valorDespesa, descDespesa, categoriaId, tipoMovimento, valeRelacionadoId } = req.body;
+    
+    const updateData = {};
+    if (nomeDespesa !== undefined) updateData.nomeDespesa = nomeDespesa;
+    if (valorDespesa !== undefined) updateData.valorDespesa = valorDespesa;
+    if (descDespesa !== undefined) updateData.descDespesa = descDespesa;
+    if (categoriaId !== undefined) updateData.categoriaId = categoriaId || null;
+    if (tipoMovimento !== undefined) updateData.tipoMovimento = tipoMovimento;
+    if (valeRelacionadoId !== undefined) updateData.valeRelacionadoId = valeRelacionadoId;
+    
     const updatedDespesa = await prisma.despPessoal.update({
       where: { id: parseInt(req.params.id) },
-      data: { 
-        nomeDespesa, 
-        valorDespesa, 
-        descDespesa,
-        categoriaId: categoriaId || null,
-        tipoMovimento: tipoMovimento || "GASTO"
-      },
+      data: updateData,
       include: { categoria: true }
     });
     res.json(updatedDespesa);
