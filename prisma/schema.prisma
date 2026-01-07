@@ -258,6 +258,7 @@ model DespPessoal{
   categoriaId  Int?
   categoria    CatDespPessoal? @relation(fields: [categoriaId], references: [id])
   valeRelacionadoId Int? // ID do registro relacionado (GASTO <-> GANHO/VALE)
+  isVale       Boolean  @default(false) // Indica se é um vale
   createdAt    DateTime @default(now())
   updatedAt    DateTime? @updatedAt
 }
