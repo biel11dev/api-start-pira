@@ -144,13 +144,29 @@ model Employee {
   position    String?      // Cargo do funcionário (opcional)
   carga       Int          @default(0) // Mantido para compatibilidade
   valorHora   Float        @default(0) // Valor por hora do funcionário
-  metaHoras   Float?       // Meta de horas semanais para bonificação
+  metaHoras   Float?       // Meta de horas semanais para bonificação (ATUAL)
   bonificacao Float?       // Valor da bonificação semanal
   contato     String?      // Contato do funcionário
   dataEntrada DateTime?    // Data de entrada do funcionário
   ativo       Boolean      @default(true) // Status do funcionário
   createdAt   DateTime     @default(now()) // Data de criação do registro
   points      DailyPoint[] // Relacionamento com os pontos diários
+  metaHistory EmployeeMetaHistory[] // Histórico de metas
+  weeklyMetas EmployeeWeeklyMeta[] // Metas por semana
+}
+
+model EmployeeMetaHistory {
+  id          Int      @id @default(autoincrement())
+  employeeId  Int
+  valorHora   Float    // Valor por hora
+  metaHoras   Float    // Meta de horas semanais
+  bonificacao Float    // Valor da bonificação
+  validFrom   DateTime // Data de início da vigência (primeiro dia do mês)
+  validUntil  DateTime? // Data de fim da vigência (null = atual)
+  createdAt   DateTime @default(now())
+  employee    Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  
+  @@index([employeeId, validFrom])
 }
 
 model DailyPoint {
@@ -162,6 +178,24 @@ model DailyPoint {
   falta      Boolean?  // Falta ou não
   employeeId Int      // Relacionamento com o funcionário
   employee   Employee @relation(fields: [employeeId], references: [id])
+}
+
+model EmployeeWeeklyMeta {
+  id          Int      @id @default(autoincrement())
+  employeeId  Int      // ID do funcionário
+  year        Int      // Ano da semana
+  month       Int      // Mês da semana
+  weekStart   DateTime // Data de início da semana (terça-feira)
+  weekEnd     DateTime // Data de fim da semana (domingo)
+  metaHoras   Float    // Meta de horas semanais
+  bonificacao Float    // Valor da bonificação semanal
+  valorHora   Float    // Valor por hora (snapshot do momento)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  employee    Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  
+  @@unique([employeeId, weekStart])
+  @@index([employeeId, year, month])
 }
 
 model CadDespesa {
