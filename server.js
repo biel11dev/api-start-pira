@@ -1720,7 +1720,7 @@ app.post("/api/desp-pessoal", async (req, res) => {
 
 app.put("/api/desp-pessoal/:id", async (req, res) => {
   try {
-    const { nomeDespesa, valorDespesa, descDespesa, date, DespesaFixa, categoriaId, tipoMovimento, valeRelacionadoId } = req.body;
+    const { nomeDespesa, valorDespesa, descDespesa, date, DespesaFixa, categoriaId, tipoMovimento, valeRelacionadoId, isVale } = req.body;
     
     const updateData = {};
     if (nomeDespesa !== undefined) updateData.nomeDespesa = nomeDespesa;
@@ -1729,6 +1729,7 @@ app.put("/api/desp-pessoal/:id", async (req, res) => {
     if (tipoMovimento !== undefined) updateData.tipoMovimento = tipoMovimento;
     if (valeRelacionadoId !== undefined) updateData.valeRelacionadoId = valeRelacionadoId;
     if (DespesaFixa !== undefined) updateData.DespesaFixa = DespesaFixa;
+    if (isVale !== undefined) updateData.isVale = isVale;
     
     // Atualizar categoria usando relação
     if (categoriaId !== undefined) {
