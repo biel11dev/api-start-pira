@@ -679,6 +679,142 @@ app.post("/api/estoque_prod/converter", async (req, res) => {
   }
 });
 
+// Converter Unidades → Unidade empacotada (reverso)
+app.post("/api/estoque_prod/converter-reverso", async (req, res) => {
+  try {
+    const { estoqueId, targetUnit, quantityPacked } = req.body;
+
+    if (!estoqueId || !targetUnit || !quantityPacked) {
+      return res.status(400).json({ error: "estoqueId, targetUnit e quantityPacked são obrigatórios." });
+    }
+
+    const parsedQty = parseInt(quantityPacked, 10);
+    if (isNaN(parsedQty) || parsedQty <= 0) {
+      return res.status(400).json({ error: "Quantidade deve ser um número válido maior que zero." });
+    }
+
+    // Buscar o item de Unidade no estoque
+    const estoqueItem = await prisma.estoque.findUnique({
+      where: { id: parseInt(estoqueId) },
+      include: { product: true }
+    });
+    if (!estoqueItem) {
+      return res.status(404).json({ error: "Item não encontrado no estoque." });
+    }
+
+    if (estoqueItem.unit !== "Unidade") {
+      return res.status(400).json({ error: "Este item não está em Unidades. Use a conversão normal." });
+    }
+
+    // Buscar fator de conversão da unidade de destino
+    const equivalence = await prisma.unitEquivalence.findUnique({
+      where: { unitName: targetUnit }
+    });
+    if (!equivalence) {
+      return res.status(400).json({
+        error: `Equivalência não definida para "${targetUnit}". Cadastre a equivalência primeiro.`
+      });
+    }
+
+    const unitsNeeded = parsedQty * equivalence.value;
+
+    if (estoqueItem.quantity < unitsNeeded) {
+      return res.status(400).json({
+        error: `Unidades insuficientes. Necessário: ${unitsNeeded} un. Disponível: ${estoqueItem.quantity} un.`
+      });
+    }
+
+    const packedValueSell = estoqueItem.value * equivalence.value;
+    const packedValueCost = estoqueItem.valuecusto * equivalence.value;
+
+    const result = await prisma.$transaction(async (tx) => {
+      // 1. Diminuir unidades do item original
+      const previousStock = estoqueItem.quantity;
+      const newStock = previousStock - unitsNeeded;
+
+      await tx.estoque.update({
+        where: { id: estoqueItem.id },
+        data: { quantity: newStock }
+      });
+
+      await tx.stockMovement.create({
+        data: {
+          estoqueId: estoqueItem.id,
+          type: 'CONVERSION_OUT',
+          quantity: -unitsNeeded,
+          previousStock: previousStock,
+          newStock: newStock,
+          description: `Conversão reversa: ${unitsNeeded}x Unidade → ${parsedQty}x ${targetUnit}`,
+          referenceType: 'Conversion'
+        }
+      });
+
+      // 2. Verificar se já existe registro nessa unidade para este produto
+      const existingPackedStock = await tx.estoque.findFirst({
+        where: { productId: estoqueItem.productId, unit: targetUnit }
+      });
+
+      let packedEstoqueItem;
+      if (existingPackedStock) {
+        const prevPackedStock = existingPackedStock.quantity;
+        const newPackedStock = prevPackedStock + parsedQty;
+
+        packedEstoqueItem = await tx.estoque.update({
+          where: { id: existingPackedStock.id },
+          data: { quantity: newPackedStock }
+        });
+
+        await tx.stockMovement.create({
+          data: {
+            estoqueId: existingPackedStock.id,
+            type: 'CONVERSION_IN',
+            quantity: parsedQty,
+            previousStock: prevPackedStock,
+            newStock: newPackedStock,
+            description: `Conversão reversa: ${unitsNeeded}x Unidade → ${parsedQty}x ${targetUnit}`,
+            referenceType: 'Conversion'
+          }
+        });
+      } else {
+        packedEstoqueItem = await tx.estoque.create({
+          data: {
+            productId: estoqueItem.productId,
+            name: estoqueItem.name,
+            quantity: parsedQty,
+            unit: targetUnit,
+            value: Math.round(packedValueSell * 100) / 100,
+            valuecusto: Math.round(packedValueCost * 100) / 100,
+            categoria_Id: estoqueItem.categoria_Id
+          }
+        });
+
+        await tx.stockMovement.create({
+          data: {
+            estoqueId: packedEstoqueItem.id,
+            type: 'CONVERSION_IN',
+            quantity: parsedQty,
+            previousStock: 0,
+            newStock: parsedQty,
+            description: `Conversão reversa: ${unitsNeeded}x Unidade → ${parsedQty}x ${targetUnit} (novo registro)`,
+            referenceType: 'Conversion'
+          }
+        });
+      }
+
+      return {
+        origin: { id: estoqueItem.id, name: estoqueItem.name, unit: "Unidade", removed: unitsNeeded, remaining: newStock },
+        destination: { id: packedEstoqueItem.id, name: estoqueItem.name, unit: targetUnit, added: parsedQty, total: packedEstoqueItem.quantity },
+        conversionFactor: equivalence.value
+      };
+    });
+
+    res.json(result);
+  } catch (error) {
+    console.error("Erro na conversão reversa:", error);
+    res.status(500).json({ error: "Erro ao converter unidade", details: error.message });
+  }
+});
+
 app.post("/api/estoque_prod", async (req, res) => {
   try {
     const { name, quantity, unit, value, valuecusto, categoryId, productId } = req.body;
@@ -784,12 +920,40 @@ app.delete("/api/estoque_prod/:id", async (req, res) => {
       return res.status(400).json({ error: "ID inválido" });
     }
 
-    await prisma.estoque.delete({ where: { id } });
+    // Excluir registros relacionados antes de excluir o item do estoque
+    await prisma.$transaction([
+      prisma.stockMovement.deleteMany({ where: { estoqueId: id } }),
+      prisma.saleItem.deleteMany({ where: { estoqueId: id } }),
+      prisma.estoque.delete({ where: { id } }),
+    ]);
+
     res.json({ message: "Produto excluído com sucesso" });
   } catch (error) {
     res.status(500).json({ error: "Erro ao excluir produto", details: error.message });
   }
 });
+
+// Rota para verificar senha do usuário (confirmação de ações sensíveis)
+app.post("/api/verify-password", async (req, res) => {
+  try {
+    const { username, password } = req.body;
+    if (!username || !password) {
+      return res.status(400).json({ error: "Usuário e senha são obrigatórios" });
+    }
+    const user = await prisma.user.findUnique({ where: { username } });
+    if (!user) {
+      return res.status(401).json({ error: "Usuário não encontrado" });
+    }
+    const isValid = await bcrypt.compare(password, user.password);
+    if (!isValid) {
+      return res.status(401).json({ error: "Senha incorreta" });
+    }
+    res.json({ verified: true });
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao verificar senha", details: error.message });
+  }
+});
+
 // ROTAS DE PRODUTOS (CORREÇÃO DO ERRO `quantity`)
 app.get("/api/products", async (req, res) => {
   try {
