@@ -408,19 +408,280 @@ app.delete("/api/daily-readings/:id", async (req, res) => {
   }
 });
 
-// ROTAS DE PRODUTOS (CORREÇÃO DO ERRO `quantity`)
-app.get("/api/estoque_prod", async (req, res) => res.json(await prisma.estoque.findMany()));
+// ROTAS DE ESTOQUE
+app.get("/api/estoque_prod", async (req, res) => {
+  try {
+    const produtos = await prisma.estoque.findMany({
+      include: {
+        product: true,
+        category: {
+          include: {
+            parent: true
+          }
+        }
+      }
+    });
+    res.json(produtos);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao buscar estoque", details: error.message });
+  }
+});
 
 app.get("/api/estoque_prod/:id", async (req, res) => {
-  const product = await prisma.estoque.findUnique({
-    where: { id: parseInt(req.params.id) },
-  });
-  res.json(product || { error: "Produto não encontrado" });
+  try {
+    const product = await prisma.estoque.findUnique({
+      where: { id: parseInt(req.params.id) },
+      include: {
+        product: true,
+        category: {
+          include: {
+            parent: true
+          }
+        }
+      }
+    });
+    res.json(product || { error: "Produto não encontrado" });
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao buscar produto", details: error.message });
+  }
+});
+
+// Entrada de estoque - seleciona do catálogo, verifica se já existe, incrementa ou cria
+app.post("/api/estoque_prod/entrada", async (req, res) => {
+  try {
+    const { productId, quantity, unit } = req.body;
+
+    if (!productId || !quantity || !unit) {
+      return res.status(400).json({ error: "productId, quantity e unit são obrigatórios." });
+    }
+
+    const parsedQuantity = parseInt(quantity, 10);
+    if (isNaN(parsedQuantity) || parsedQuantity <= 0) {
+      return res.status(400).json({ error: "Quantidade deve ser um número válido maior que zero." });
+    }
+
+    // Buscar o produto no catálogo
+    const catalogProduct = await prisma.product.findUnique({ 
+      where: { id: parseInt(productId) },
+      include: { category: { include: { parent: true } } }
+    });
+    if (!catalogProduct) {
+      return res.status(404).json({ error: "Produto não encontrado no catálogo." });
+    }
+
+    // Verificar se já existe no estoque com mesmo productId e mesma unidade
+    const existingStock = await prisma.estoque.findFirst({
+      where: { productId: parseInt(productId), unit: unit }
+    });
+
+    const result = await prisma.$transaction(async (tx) => {
+      let estoqueItem;
+
+      if (existingStock) {
+        // Incrementar quantidade no registro existente
+        const previousStock = existingStock.quantity;
+        const newStock = previousStock + parsedQuantity;
+
+        estoqueItem = await tx.estoque.update({
+          where: { id: existingStock.id },
+          data: { 
+            quantity: newStock,
+            value: catalogProduct.value,
+            valuecusto: catalogProduct.valuecusto
+          },
+          include: { product: true, category: { include: { parent: true } } }
+        });
+
+        // Registrar movimentação
+        await tx.stockMovement.create({
+          data: {
+            estoqueId: existingStock.id,
+            type: 'ENTRY',
+            quantity: parsedQuantity,
+            previousStock: previousStock,
+            newStock: newStock,
+            description: `Entrada de ${parsedQuantity}x ${unit} - ${catalogProduct.name}`,
+            referenceType: 'Manual'
+          }
+        });
+      } else {
+        // Criar novo registro no estoque
+        estoqueItem = await tx.estoque.create({
+          data: {
+            productId: parseInt(productId),
+            name: catalogProduct.name,
+            quantity: parsedQuantity,
+            unit: unit,
+            value: catalogProduct.value,
+            valuecusto: catalogProduct.valuecusto,
+            categoria_Id: catalogProduct.categoryId || null
+          },
+          include: { product: true, category: { include: { parent: true } } }
+        });
+
+        // Registrar movimentação
+        await tx.stockMovement.create({
+          data: {
+            estoqueId: estoqueItem.id,
+            type: 'ENTRY',
+            quantity: parsedQuantity,
+            previousStock: 0,
+            newStock: parsedQuantity,
+            description: `Entrada inicial de ${parsedQuantity}x ${unit} - ${catalogProduct.name}`,
+            referenceType: 'Manual'
+          }
+        });
+      }
+
+      return estoqueItem;
+    });
+
+    res.status(201).json(result);
+  } catch (error) {
+    console.error("Erro na entrada de estoque:", error);
+    res.status(500).json({ error: "Erro ao registrar entrada no estoque", details: error.message });
+  }
+});
+
+// Conversão de unidades - ex: 1 Fardo (12un) → 12 Unidades
+app.post("/api/estoque_prod/converter", async (req, res) => {
+  try {
+    const { estoqueId, quantityToConvert } = req.body;
+
+    if (!estoqueId || !quantityToConvert) {
+      return res.status(400).json({ error: "estoqueId e quantityToConvert são obrigatórios." });
+    }
+
+    const parsedQty = parseInt(quantityToConvert, 10);
+    if (isNaN(parsedQty) || parsedQty <= 0) {
+      return res.status(400).json({ error: "Quantidade deve ser um número válido maior que zero." });
+    }
+
+    // Buscar o item no estoque
+    const estoqueItem = await prisma.estoque.findUnique({
+      where: { id: parseInt(estoqueId) },
+      include: { product: true }
+    });
+    if (!estoqueItem) {
+      return res.status(404).json({ error: "Item não encontrado no estoque." });
+    }
+
+    if (estoqueItem.unit === "Unidade") {
+      return res.status(400).json({ error: "Este item já está em Unidades, não é possível converter." });
+    }
+
+    if (estoqueItem.quantity < parsedQty) {
+      return res.status(400).json({ 
+        error: `Quantidade insuficiente. Disponível: ${estoqueItem.quantity} ${estoqueItem.unit}(s)` 
+      });
+    }
+
+    // Buscar fator de conversão
+    const equivalence = await prisma.unitEquivalence.findUnique({
+      where: { unitName: estoqueItem.unit }
+    });
+    if (!equivalence) {
+      return res.status(400).json({ 
+        error: `Equivalência não definida para "${estoqueItem.unit}". Cadastre a equivalência primeiro.` 
+      });
+    }
+
+    const unitsGenerated = parsedQty * equivalence.value;
+    const unitValueSell = estoqueItem.value / equivalence.value;
+    const unitValueCost = estoqueItem.valuecusto / equivalence.value;
+
+    const result = await prisma.$transaction(async (tx) => {
+      // 1. Diminuir quantidade do item original
+      const previousStock = estoqueItem.quantity;
+      const newStock = previousStock - parsedQty;
+
+      await tx.estoque.update({
+        where: { id: estoqueItem.id },
+        data: { quantity: newStock }
+      });
+
+      // Registrar movimentação de saída (conversão)
+      await tx.stockMovement.create({
+        data: {
+          estoqueId: estoqueItem.id,
+          type: 'CONVERSION_OUT',
+          quantity: -parsedQty,
+          previousStock: previousStock,
+          newStock: newStock,
+          description: `Conversão: ${parsedQty}x ${estoqueItem.unit} → ${unitsGenerated}x Unidade`,
+          referenceType: 'Conversion'
+        }
+      });
+
+      // 2. Verificar se já existe registro em Unidade para este produto
+      const existingUnitStock = await tx.estoque.findFirst({
+        where: { productId: estoqueItem.productId, unit: "Unidade" }
+      });
+
+      let unitEstoqueItem;
+      if (existingUnitStock) {
+        const prevUnitStock = existingUnitStock.quantity;
+        const newUnitStock = prevUnitStock + unitsGenerated;
+
+        unitEstoqueItem = await tx.estoque.update({
+          where: { id: existingUnitStock.id },
+          data: { quantity: newUnitStock }
+        });
+
+        await tx.stockMovement.create({
+          data: {
+            estoqueId: existingUnitStock.id,
+            type: 'CONVERSION_IN',
+            quantity: unitsGenerated,
+            previousStock: prevUnitStock,
+            newStock: newUnitStock,
+            description: `Conversão: ${parsedQty}x ${estoqueItem.unit} → ${unitsGenerated}x Unidade`,
+            referenceType: 'Conversion'
+          }
+        });
+      } else {
+        unitEstoqueItem = await tx.estoque.create({
+          data: {
+            productId: estoqueItem.productId,
+            name: estoqueItem.name,
+            quantity: unitsGenerated,
+            unit: "Unidade",
+            value: Math.round(unitValueSell * 100) / 100,
+            valuecusto: Math.round(unitValueCost * 100) / 100,
+            categoria_Id: estoqueItem.categoria_Id
+          }
+        });
+
+        await tx.stockMovement.create({
+          data: {
+            estoqueId: unitEstoqueItem.id,
+            type: 'CONVERSION_IN',
+            quantity: unitsGenerated,
+            previousStock: 0,
+            newStock: unitsGenerated,
+            description: `Conversão: ${parsedQty}x ${estoqueItem.unit} → ${unitsGenerated}x Unidade (novo registro)`,
+            referenceType: 'Conversion'
+          }
+        });
+      }
+
+      return {
+        origin: { id: estoqueItem.id, name: estoqueItem.name, unit: estoqueItem.unit, removed: parsedQty, remaining: newStock },
+        destination: { id: unitEstoqueItem.id, name: estoqueItem.name, unit: "Unidade", added: unitsGenerated, total: unitEstoqueItem.quantity },
+        conversionFactor: equivalence.value
+      };
+    });
+
+    res.json(result);
+  } catch (error) {
+    console.error("Erro na conversão de unidade:", error);
+    res.status(500).json({ error: "Erro ao converter unidade", details: error.message });
+  }
 });
 
 app.post("/api/estoque_prod", async (req, res) => {
   try {
-    const { name, quantity, unit, value, valuecusto } = req.body;
+    const { name, quantity, unit, value, valuecusto, categoryId, productId } = req.body;
 
     if (!name || !quantity || !unit) {
       return res.status(400).json({ error: "Todos os campos são obrigatórios." });
@@ -442,7 +703,23 @@ app.post("/api/estoque_prod", async (req, res) => {
     }
 
     const newProduct = await prisma.estoque.create({
-      data: { name, quantity: parsedQuantity, unit, value: parsedValue, valuecusto: parsedValueCusto },
+      data: { 
+        name, 
+        quantity: parsedQuantity, 
+        unit, 
+        value: parsedValue, 
+        valuecusto: parsedValueCusto,
+        categoria_Id: categoryId ? parseInt(categoryId) : null,
+        productId: productId ? parseInt(productId) : null
+      },
+      include: {
+        product: true,
+        category: {
+          include: {
+            parent: true
+          }
+        }
+      }
     });
 
     res.status(201).json(newProduct);
@@ -453,7 +730,7 @@ app.post("/api/estoque_prod", async (req, res) => {
 
 app.put("/api/estoque_prod/:id", async (req, res) => {
   try {
-    const { name, quantity, unit, value, valuecusto } = req.body;
+    const { name, quantity, unit, value, valuecusto, categoryId } = req.body;
 
     if (!name || !quantity || !unit) {
       return res.status(400).json({ error: "Todos os campos são obrigatórios." });
@@ -476,7 +753,22 @@ app.put("/api/estoque_prod/:id", async (req, res) => {
 
     const updatedProduct = await prisma.estoque.update({
       where: { id: parseInt(req.params.id) },
-      data: { name, quantity: parsedQuantity, unit, value: parsedValue, valuecusto: parsedValueCusto },
+      data: { 
+        name, 
+        quantity: parsedQuantity, 
+        unit, 
+        value: parsedValue, 
+        valuecusto: parsedValueCusto,
+        categoria_Id: categoryId ? parseInt(categoryId) : null
+      },
+      include: {
+        product: true,
+        category: {
+          include: {
+            parent: true
+          }
+        }
+      }
     });
 
     res.json(updatedProduct);
@@ -1517,39 +1809,84 @@ app.delete("/api/categories/:id", async (req, res) => {
   }
 });
 
-// Rota para criar uma nova venda (PDV)
+// Rota para criar uma nova venda (PDV) com baixa de estoque
 app.post('/api/sales', async (req, res) => {
   try {
     const { items, total, paymentMethod, customerName, amountReceived, change, date } = req.body;
-    
-    // Criar registro da venda
-    const sale = await prisma.sale.create({
-      data: {
-        total: parseFloat(total),
-        paymentMethod,
-        customerName,
-        amountReceived: parseFloat(amountReceived) || total,
-        change: parseFloat(change) || 0,
-        date: parseISO(date),
-        items: {
-          create: items.map(item => ({
-            productId: item.id,
-            productName: item.name,
-            quantity: item.quantity,
-            unitPrice: item.price,
-            total: item.price * item.quantity
-          }))
-        }
-      },
-      include: {
-        items: true
+
+    // Verificar estoque antes de prosseguir (busca na tabela Estoque)
+    for (const item of items) {
+      const estoqueItem = await prisma.estoque.findUnique({ where: { id: item.id } });
+      if (!estoqueItem) {
+        return res.status(400).json({ error: `Produto "${item.name}" não encontrado no estoque.` });
       }
+      if (estoqueItem.quantity < item.quantity) {
+        return res.status(400).json({ 
+          error: `Estoque insuficiente para "${item.name}". Disponível: ${estoqueItem.quantity}, Solicitado: ${item.quantity}` 
+        });
+      }
+    }
+
+    // Usar transação para garantir consistência entre venda, estoque e movimentação
+    const result = await prisma.$transaction(async (tx) => {
+      // 1. Criar a venda
+      const sale = await tx.sale.create({
+        data: {
+          total: parseFloat(total),
+          paymentMethod,
+          customerName,
+          amountReceived: parseFloat(amountReceived) || total,
+          change: parseFloat(change) || 0,
+          date: parseISO(date),
+          items: {
+            create: items.map(item => ({
+              estoqueId: item.id,
+              productName: item.name,
+              quantity: item.quantity,
+              unitPrice: item.price,
+              total: item.price * item.quantity
+            }))
+          }
+        },
+        include: {
+          items: true
+        }
+      });
+
+      // 2. Dar baixa no ESTOQUE e registrar movimentações
+      for (const item of items) {
+        const estoqueItem = await tx.estoque.findUnique({ where: { id: item.id } });
+        const previousStock = estoqueItem.quantity;
+        const newStock = previousStock - item.quantity;
+
+        // Atualizar quantidade no estoque
+        await tx.estoque.update({
+          where: { id: item.id },
+          data: { quantity: newStock }
+        });
+
+        // Registrar movimentação de estoque
+        await tx.stockMovement.create({
+          data: {
+            estoqueId: item.id,
+            type: 'SALE',
+            quantity: -item.quantity, // negativo = saída
+            previousStock: previousStock,
+            newStock: newStock,
+            description: `Venda #${sale.id} - ${item.name} (${item.quantity}x)`,
+            referenceId: sale.id,
+            referenceType: 'Sale'
+          }
+        });
+      }
+
+      return sale;
     });
 
-    res.status(201).json(sale);
+    res.status(201).json(result);
   } catch (error) {
     console.error('Erro ao criar venda:', error);
-    res.status(500).json({ error: 'Erro interno do servidor' });
+    res.status(500).json({ error: 'Erro interno do servidor', details: error.message });
   }
 });
 
@@ -1569,6 +1906,126 @@ app.get('/api/sales', async (req, res) => {
   } catch (error) {
     console.error('Erro ao buscar vendas:', error);
     res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
+// ROTAS DE MOVIMENTAÇÕES DE ESTOQUE
+
+// Buscar todas as movimentações (com filtros opcionais)
+app.get('/api/stock-movements', async (req, res) => {
+  try {
+    const { estoqueId, type, startDate, endDate, limit } = req.query;
+    
+    const where = {};
+    if (estoqueId) where.estoqueId = parseInt(estoqueId);
+    if (type) where.type = type;
+    if (startDate || endDate) {
+      where.createdAt = {};
+      if (startDate) where.createdAt.gte = new Date(startDate);
+      if (endDate) where.createdAt.lte = new Date(endDate);
+    }
+
+    const movements = await prisma.stockMovement.findMany({
+      where,
+      include: {
+        estoque: {
+          select: { id: true, name: true, unit: true, quantity: true }
+        }
+      },
+      orderBy: { createdAt: 'desc' },
+      take: limit ? parseInt(limit) : 100
+    });
+
+    res.json(movements);
+  } catch (error) {
+    console.error('Erro ao buscar movimentações:', error);
+    res.status(500).json({ error: 'Erro ao buscar movimentações', details: error.message });
+  }
+});
+
+// Buscar movimentações de um item do estoque específico
+app.get('/api/stock-movements/estoque/:estoqueId', async (req, res) => {
+  try {
+    const estoqueId = parseInt(req.params.estoqueId);
+    
+    const movements = await prisma.stockMovement.findMany({
+      where: { estoqueId },
+      include: {
+        estoque: {
+          select: { id: true, name: true, unit: true, quantity: true }
+        }
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    res.json(movements);
+  } catch (error) {
+    console.error('Erro ao buscar movimentações do produto:', error);
+    res.status(500).json({ error: 'Erro ao buscar movimentações', details: error.message });
+  }
+});
+
+// Registrar movimentação manual de estoque (entrada, ajuste, etc.)
+app.post('/api/stock-movements', async (req, res) => {
+  try {
+    const { estoqueId, type, quantity, description } = req.body;
+
+    if (!estoqueId || !type || quantity === undefined) {
+      return res.status(400).json({ error: 'estoqueId, type e quantity são obrigatórios.' });
+    }
+
+    const validTypes = ['ENTRY', 'ADJUSTMENT', 'RETURN', 'LOSS'];
+    if (!validTypes.includes(type)) {
+      return res.status(400).json({ error: `Tipo inválido. Use: ${validTypes.join(', ')}` });
+    }
+
+    const result = await prisma.$transaction(async (tx) => {
+      const estoqueItem = await tx.estoque.findUnique({ where: { id: parseInt(estoqueId) } });
+      if (!estoqueItem) {
+        throw new Error('Produto não encontrado no estoque');
+      }
+
+      const previousStock = estoqueItem.quantity;
+      const parsedQty = parseFloat(quantity);
+      const newStock = previousStock + parsedQty; // positivo = entrada, negativo = saída
+
+      if (newStock < 0) {
+        throw new Error(`Estoque não pode ficar negativo. Estoque atual: ${previousStock}`);
+      }
+
+      // Atualizar quantidade no estoque
+      await tx.estoque.update({
+        where: { id: parseInt(estoqueId) },
+        data: { quantity: newStock }
+      });
+
+      // Registrar movimentação
+      const movement = await tx.stockMovement.create({
+        data: {
+          estoqueId: parseInt(estoqueId),
+          type,
+          quantity: parsedQty,
+          previousStock,
+          newStock,
+          description: description || `${type} manual`,
+          referenceType: 'Manual'
+        },
+        include: {
+          estoque: {
+            select: { id: true, name: true, unit: true, quantity: true }
+          }
+        }
+      });
+
+      return movement;
+    });
+
+    res.status(201).json(result);
+  } catch (error) {
+    console.error('Erro ao registrar movimentação:', error);
+    res.status(error.message.includes('não') ? 400 : 500).json({ 
+      error: error.message || 'Erro ao registrar movimentação' 
+    });
   }
 });
 

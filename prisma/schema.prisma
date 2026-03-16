@@ -92,19 +92,26 @@ model Product {
   updatedAt DateTime? @updatedAt
   value     Float
   valuecusto Float
+  estoqueItems Estoque[]
 }
 
 model Estoque {
-  id        Int      @id @default(autoincrement())
-  name      String
-  quantity  Int
-  unit      String
+  id          Int      @id @default(autoincrement())
+  productId   Int      // Vinculado ao catálogo de produtos
+  product     Product  @relation(fields: [productId], references: [id])
+  name        String
+  quantity    Int
+  unit        String
   categoria_Id Int?
   category   Category? @relation(fields: [categoria_Id], references: [id])
-  createdAt DateTime @default(now())
-  updatedAt DateTime? @updatedAt
-  value     Float
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime? @updatedAt
+  value      Float
   valuecusto Float
+  stockMovements StockMovement[]
+  saleItems      SaleItem[]
+
+  @@index([productId])
 }
 
 model Purchase {
@@ -229,14 +236,33 @@ model Sale {
 }
 
 model SaleItem {
-  id          Int    @id @default(autoincrement())
+  id          Int      @id @default(autoincrement())
   saleId      Int
-  productId   Int
+  estoqueId   Int
   productName String
-  quantity    Int
+  quantity    Float
   unitPrice   Float
   total       Float
-  sale        Sale   @relation(fields: [saleId], references: [id])
+  sale        Sale     @relation(fields: [saleId], references: [id])
+  estoque     Estoque  @relation(fields: [estoqueId], references: [id])
+}
+
+model StockMovement {
+  id            Int      @id @default(autoincrement())
+  estoqueId     Int
+  estoque       Estoque  @relation(fields: [estoqueId], references: [id])
+  type          String   // SALE, ADJUSTMENT, ENTRY, RETURN
+  quantity      Float    // quantidade movimentada (positivo = entrada, negativo = saída)
+  previousStock Int      // estoque antes da movimentação
+  newStock      Int      // estoque depois da movimentação
+  description   String?  // descrição/motivo da movimentação
+  referenceId   Int?     // ID da venda ou outra referência
+  referenceType String?  // "Sale", "Manual", etc.
+  createdAt     DateTime @default(now())
+
+  @@index([estoqueId])
+  @@index([type])
+  @@index([createdAt])
 }
 
 model UnitEquivalence {
