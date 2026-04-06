@@ -90,9 +90,22 @@ const auditoriaMiddleware = async (req, res, next) => {
         return originalJson(body);
       }
 
-      // Tenta obter dados do usuário
+      // Tenta obter dados do usuário a partir do token JWT
       let userId = req.userId || null;
       let userName = null;
+
+      // Tenta extrair userId do token mesmo sem authenticate middleware
+      if (!userId) {
+        try {
+          const authHeader = req.headers.authorization;
+          if (authHeader && authHeader.startsWith("Bearer ")) {
+            const token = authHeader.split(" ")[1];
+            const decoded = jwt.verify(token, SECRET_KEY);
+            userId = decoded.userId || null;
+          }
+        } catch (e) { /* token inválido ou ausente, ignora */ }
+      }
+
       if (userId) {
         try {
           const user = await prisma.user.findUnique({ where: { id: userId } });
