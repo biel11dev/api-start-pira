@@ -141,6 +141,7 @@ model User {
   base_produto Boolean?
   pdv Boolean?
   pessoal Boolean?
+  auditoria Boolean?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
@@ -294,4 +295,30 @@ model CatDespPessoal{
   nomeCategoria  String?
   createdAt    DateTime @default(now())
   DespPessoal DespPessoal[]
+}
+
+model Auditoria {
+  id          Int      @id @default(autoincrement())
+  modulo      String   // Nome do módulo (caixa, pdv, fiado, etc.)
+  acao        String   // Método HTTP: POST, PUT, DELETE, GET
+  descricao   String?  // Descrição da ação realizada
+  rota        String   // Rota da API chamada
+  userId      Int?     // ID do usuário que realizou a ação
+  userName    String?  // Nome do usuário para consulta rápida
+  ip          String?  // IP do requisitante
+  payload     String?  // JSON com dados enviados (body resumido)
+  createdAt   DateTime @default(now())
+
+  @@index([modulo])
+  @@index([userId])
+  @@index([createdAt])
+  @@index([acao])
+}
+
+model AuditoriaConfig {
+  id          Int      @id @default(autoincrement())
+  modulo      String   @unique // Nome do módulo
+  ativo       Boolean  @default(true) // Se o módulo deve ser auditado
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 }
