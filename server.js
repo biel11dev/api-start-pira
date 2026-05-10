@@ -28,7 +28,7 @@ app.use(
   })
 );
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "15mb" }));
 app.use(morgan("dev"));
 
 // Middleware de autenticação
@@ -50,6 +50,7 @@ const rotaParaModulo = (rota) => {
   if (rota.includes("/api/balance")) return "caixa";
   if (rota.includes("/api/sales")) return "pdv";
   if (rota.includes("/api/estoque")) return "pdv";
+  if (rota.includes("/api/pdv-caixa") || rota.includes("/api/pdv-origens")) return "pdv";
   if (rota.includes("/api/products")) return "produtos";
   if (rota.includes("/api/categories")) return "estoque";
   if (rota.includes("/api/unit-equivalences")) return "estoque";
@@ -57,7 +58,7 @@ const rotaParaModulo = (rota) => {
   if (rota.includes("/api/machines")) return "maquinas";
   if (rota.includes("/api/machine-week")) return "maquinas";
   if (rota.includes("/api/daily-readings")) return "maquinas";
-  if (rota.includes("/api/clients")) return "fiado";
+  if (rota.includes("/api/clients")) return "fiado";  
   if (rota.includes("/api/purchases")) return "fiado";
   if (rota.includes("/api/payments")) return "fiado";
   if (rota.includes("/api/despesas") || rota.includes("/api/cadastrodesp")) return "despesas";
@@ -76,6 +77,8 @@ const auditoriaMiddleware = async (req, res, next) => {
   // Ignora rotas estáticas e de validação de token
   if (!req.path.startsWith("/api/")) return next();
   if (req.path === "/api/validate-token") return next();
+  // Ignora requisições GET para não poluir a auditoria
+  if (req.method === "GET") return next();
 
   // Captura a resposta original
   const originalJson = res.json.bind(res);
@@ -520,11 +523,9 @@ app.get("/api/estoque_prod", async (req, res) => {
     const produtos = await prisma.estoque.findMany({
       include: {
         product: true,
-        category: {
-          include: {
-            parent: true
-          }
-        }
+        category: { include: { parent: true } },
+        composicoes: { include: { opcoes: { include: { estoque: { select: { id: true, name: true, quantity: true } } }, orderBy: { id: 'asc' } } }, orderBy: { ordem: 'asc' } },
+        _count: { select: { composicaoOpcoes: true } }
       }
     });
     res.json(produtos);
@@ -539,11 +540,8 @@ app.get("/api/estoque_prod/:id", async (req, res) => {
       where: { id: parseInt(req.params.id) },
       include: {
         product: true,
-        category: {
-          include: {
-            parent: true
-          }
-        }
+        category: { include: { parent: true } },
+        composicoes: { include: { opcoes: { include: { estoque: { select: { id: true, name: true, quantity: true } } }, orderBy: { id: 'asc' } } }, orderBy: { ordem: 'asc' } }
       }
     });
     res.json(product || { error: "Produto não encontrado" });
@@ -921,7 +919,100 @@ app.post("/api/estoque_prod/converter-reverso", async (req, res) => {
   }
 });
 
-app.post("/api/estoque_prod", async (req, res) => {
+// Converter qualquer unidade em porções customizadas (ex: Garrafa → Dose)
+app.post("/api/estoque_prod/converter-dose", async (req, res) => {
+  try {
+    const { estoqueId, quantityToConvert, targetUnit, yieldPerUnit, targetValue, targetValueCusto } = req.body;
+
+    if (!estoqueId || !quantityToConvert || !targetUnit || !yieldPerUnit) {
+      return res.status(400).json({ error: "estoqueId, quantityToConvert, targetUnit e yieldPerUnit são obrigatórios." });
+    }
+
+    const parsedQty = parseInt(quantityToConvert, 10);
+    const parsedYield = parseFloat(yieldPerUnit);
+    if (isNaN(parsedQty) || parsedQty <= 0 || isNaN(parsedYield) || parsedYield <= 0) {
+      return res.status(400).json({ error: "Quantidade e rendimento devem ser números válidos maiores que zero." });
+    }
+
+    const estoqueItem = await prisma.estoque.findUnique({
+      where: { id: parseInt(estoqueId) },
+      include: { product: true }
+    });
+    if (!estoqueItem) return res.status(404).json({ error: "Item não encontrado no estoque." });
+    if (estoqueItem.quantity < parsedQty) {
+      return res.status(400).json({ error: `Quantidade insuficiente. Disponível: ${estoqueItem.quantity} ${estoqueItem.unit}(s)` });
+    }
+
+    const portionsGenerated = Math.floor(parsedQty * parsedYield);
+    const sellValue = parseFloat(targetValue) || (estoqueItem.value / parsedYield);
+    const costValue = parseFloat(targetValueCusto) || (estoqueItem.valuecusto / parsedYield);
+
+    const result = await prisma.$transaction(async (tx) => {
+      // 1. Reduzir estoque da unidade fonte
+      const prevStock = estoqueItem.quantity;
+      const newStock = prevStock - parsedQty;
+      await tx.estoque.update({ where: { id: estoqueItem.id }, data: { quantity: newStock } });
+      await tx.stockMovement.create({
+        data: {
+          estoqueId: estoqueItem.id, type: 'CONVERSION_OUT',
+          quantity: -parsedQty, previousStock: prevStock, newStock: newStock,
+          description: `Conversão: ${parsedQty}x ${estoqueItem.unit} → ${portionsGenerated}x ${targetUnit}`,
+          referenceType: 'Conversion'
+        }
+      });
+
+      // 2. Incrementar ou criar registro na unidade destino
+      const existingTarget = await tx.estoque.findFirst({
+        where: { productId: estoqueItem.productId, unit: targetUnit }
+      });
+
+      let targetItem;
+      if (existingTarget) {
+        const prevTarget = existingTarget.quantity;
+        const newTarget = prevTarget + portionsGenerated;
+        targetItem = await tx.estoque.update({ where: { id: existingTarget.id }, data: { quantity: newTarget } });
+        await tx.stockMovement.create({
+          data: {
+            estoqueId: existingTarget.id, type: 'CONVERSION_IN',
+            quantity: portionsGenerated, previousStock: prevTarget, newStock: newTarget,
+            description: `Conversão: ${parsedQty}x ${estoqueItem.unit} → ${portionsGenerated}x ${targetUnit}`,
+            referenceType: 'Conversion'
+          }
+        });
+      } else {
+        targetItem = await tx.estoque.create({
+          data: {
+            productId: estoqueItem.productId,
+            name: estoqueItem.name,
+            quantity: portionsGenerated,
+            unit: targetUnit,
+            value: Math.round(sellValue * 100) / 100,
+            valuecusto: Math.round(costValue * 100) / 100,
+            categoria_Id: estoqueItem.categoria_Id
+          }
+        });
+        await tx.stockMovement.create({
+          data: {
+            estoqueId: targetItem.id, type: 'CONVERSION_IN',
+            quantity: portionsGenerated, previousStock: 0, newStock: portionsGenerated,
+            description: `Conversão: ${parsedQty}x ${estoqueItem.unit} → ${portionsGenerated}x ${targetUnit} (novo registro)`,
+            referenceType: 'Conversion'
+          }
+        });
+      }
+
+      return {
+        origin: { id: estoqueItem.id, name: estoqueItem.name, unit: estoqueItem.unit, removed: parsedQty, remaining: newStock },
+        destination: { id: targetItem.id, name: estoqueItem.name, unit: targetUnit, added: portionsGenerated, total: targetItem.quantity },
+        yieldPerUnit: parsedYield
+      };
+    });
+
+    res.json(result);
+  } catch (error) {
+    console.error("Erro na conversão de dose:", error);
+    res.status(500).json({ error: "Erro ao converter em porções", details: error.message });
+  }
   try {
     const { name, quantity, unit, value, valuecusto, categoryId, productId } = req.body;
 
@@ -1056,6 +1147,28 @@ app.post("/api/verify-password", async (req, res) => {
     }
     res.json({ verified: true });
   } catch (error) {
+    res.status(500).json({ error: "Erro ao verificar senha", details: error.message });
+  }
+});
+
+// Rota para verificar senha do Vale (usa JWT token para identificar o usuário)
+app.post("/api/verify-vale-password", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader) return res.status(401).json({ error: "Token não fornecido" });
+    const token = authHeader.split(" ")[1];
+    const decoded = jwt.verify(token, SECRET_KEY);
+    const user = await prisma.user.findUnique({ where: { id: decoded.userId } });
+    if (!user) return res.status(404).json({ error: "Usuário não encontrado" });
+    const { password } = req.body;
+    if (!password) return res.status(400).json({ error: "Senha é obrigatória" });
+    const isValid = await bcrypt.compare(password, user.password);
+    if (!isValid) return res.status(401).json({ error: "Senha incorreta" });
+    res.json({ verified: true });
+  } catch (error) {
+    if (error.name === "JsonWebTokenError" || error.name === "TokenExpiredError") {
+      return res.status(401).json({ error: "Token inválido ou expirado" });
+    }
     res.status(500).json({ error: "Erro ao verificar senha", details: error.message });
   }
 });
@@ -1374,6 +1487,7 @@ app.post("/api/employees", async (req, res) => {
       valorHora = 0, 
       metaHoras = null, 
       bonificacao = null,
+      metasExtras = null,
       contato = null,
       dataEntrada = null,
       ativo = true
@@ -1387,6 +1501,7 @@ app.post("/api/employees", async (req, res) => {
         valorHora: parseFloat(valorHora) || 0,
         metaHoras: metaHoras ? parseFloat(metaHoras) : null,
         bonificacao: bonificacao ? parseFloat(bonificacao) : null,
+        metasExtras: metasExtras ? JSON.stringify(metasExtras) : null,
         contato,
         dataEntrada: dataEntrada ? new Date(dataEntrada) : null,
         ativo
@@ -1407,6 +1522,7 @@ app.put("/api/employees/:id", async (req, res) => {
       valorHora, 
       metaHoras, 
       bonificacao,
+      metasExtras,
       contato,
       dataEntrada,
       ativo
@@ -1420,6 +1536,7 @@ app.put("/api/employees/:id", async (req, res) => {
     if (valorHora !== undefined) updateData.valorHora = parseFloat(valorHora) || 0;
     if (metaHoras !== undefined) updateData.metaHoras = metaHoras ? parseFloat(metaHoras) : null;
     if (bonificacao !== undefined) updateData.bonificacao = bonificacao ? parseFloat(bonificacao) : null;
+    if (metasExtras !== undefined) updateData.metasExtras = metasExtras ? JSON.stringify(metasExtras) : null;
     if (contato !== undefined) updateData.contato = contato;
     if (dataEntrada !== undefined) updateData.dataEntrada = dataEntrada ? new Date(dataEntrada) : null;
     if (ativo !== undefined) updateData.ativo = ativo;
@@ -2082,30 +2199,70 @@ app.delete("/api/categories/:id", async (req, res) => {
 // Rota para criar uma nova venda (PDV) com baixa de estoque
 app.post('/api/sales', async (req, res) => {
   try {
-    const { items, total, paymentMethod, customerName, amountReceived, change, date } = req.body;
+    const { items, total, paymentMethod, customerName, amountReceived, change, date, discount, splitPayments: splitPay, pendente, vale, subtotal, finalTotal } = req.body;
 
-    // Verificar estoque antes de prosseguir (busca na tabela Estoque)
+    // Verificar estoque antes de prosseguir (verificação inicial rápida)
     for (const item of items) {
       const estoqueItem = await prisma.estoque.findUnique({ where: { id: item.id } });
       if (!estoqueItem) {
         return res.status(400).json({ error: `Produto "${item.name}" não encontrado no estoque.` });
       }
       if (estoqueItem.quantity < item.quantity) {
-        return res.status(400).json({ 
-          error: `Estoque insuficiente para "${item.name}". Disponível: ${estoqueItem.quantity}, Solicitado: ${item.quantity}` 
+        // Buscar última venda que baixou este item para informar ao operador
+        const lastMovement = await prisma.stockMovement.findFirst({
+          where: { estoqueId: item.id, type: 'SALE' },
+          orderBy: { createdAt: 'desc' }
+        });
+        const saleRef = lastMovement?.referenceId ? ` Último desconto registrado na Venda #${lastMovement.referenceId}.` : '';
+        return res.status(400).json({
+          error: `Estoque insuficiente para "${item.name}". Disponível: ${estoqueItem.quantity}, Solicitado: ${item.quantity}.${saleRef}`
         });
       }
     }
+
+    // Verificar limite de comanda se pendente (usa soma de comandas abertas, não totalDebt)
+    if (pendente && pendente.clientId) {
+      const client = await prisma.client.findUnique({ where: { id: pendente.clientId } });
+      if (!client) return res.status(400).json({ error: "Cliente não encontrado." });
+      const limiteConfig = await prisma.pdvConfigVenda.findFirst({ where: { chave: "limite_comanda" } });
+      if (limiteConfig) {
+        const limite = parseFloat(limiteConfig.valor);
+        const valorPendente = parseFloat(finalTotal || total);
+        // Somar comandas abertas do cliente
+        const comandasAbertas = await prisma.pdvComanda.aggregate({
+          where: { clientId: pendente.clientId, status: "ABERTA" },
+          _sum: { total: true },
+        });
+        const totalAberto = (comandasAbertas._sum.total || 0) + valorPendente;
+        if (totalAberto > limite) {
+          return res.status(400).json({ error: `Limite de comanda excedido! Total em aberto: R$ ${(comandasAbertas._sum.total || 0).toFixed(2)} + R$ ${valorPendente.toFixed(2)} = R$ ${totalAberto.toFixed(2)}, Limite: R$ ${limite.toFixed(2)}` });
+        }
+      }
+    }
+
+    // Verificar senha do Vale se necessário
+    if (vale && vale.password) {
+      const authHeader = req.headers.authorization;
+      if (!authHeader) return res.status(401).json({ error: "Token não fornecido para verificação do Vale." });
+      const token = authHeader.split(" ")[1];
+      const decoded = jwt.verify(token, SECRET_KEY);
+      const user = await prisma.user.findUnique({ where: { id: decoded.userId } });
+      if (!user) return res.status(401).json({ error: "Usuário do Vale não encontrado." });
+      const isValid = await bcrypt.compare(vale.password, user.password);
+      if (!isValid) return res.status(401).json({ error: "Senha do Vale incorreta." });
+    }
+
+    const saleTotal = parseFloat(finalTotal || total);
 
     // Usar transação para garantir consistência entre venda, estoque e movimentação
     const result = await prisma.$transaction(async (tx) => {
       // 1. Criar a venda
       const sale = await tx.sale.create({
         data: {
-          total: parseFloat(total),
+          total: saleTotal,
           paymentMethod,
           customerName,
-          amountReceived: parseFloat(amountReceived) || total,
+          amountReceived: parseFloat(amountReceived) || saleTotal,
           change: parseFloat(change) || 0,
           date: parseISO(date),
           items: {
@@ -2114,7 +2271,8 @@ app.post('/api/sales', async (req, res) => {
               productName: item.name,
               quantity: item.quantity,
               unitPrice: item.price,
-              total: item.price * item.quantity
+              total: item.price * item.quantity,
+              ...(item.composicao ? { composicao: item.composicao } : {})
             }))
           }
         },
@@ -2123,10 +2281,22 @@ app.post('/api/sales', async (req, res) => {
         }
       });
 
-      // 2. Dar baixa no ESTOQUE e registrar movimentações
+      // 2. Dar baixa no ESTOQUE e registrar movimentações (com re-verificação para concorrência)
       for (const item of items) {
+        // Re-verificar estoque dentro da transação (proteção contra race condition)
         const estoqueItem = await tx.estoque.findUnique({ where: { id: item.id } });
         const previousStock = estoqueItem.quantity;
+
+        if (previousStock < item.quantity) {
+          // Buscar última movimentação de venda para este item
+          const lastMovement = await tx.stockMovement.findFirst({
+            where: { estoqueId: item.id, type: 'SALE' },
+            orderBy: { createdAt: 'desc' }
+          });
+          const saleRef = lastMovement?.referenceId ? ` Último desconto registrado na Venda #${lastMovement.referenceId}.` : '';
+          throw new Error(`Estoque insuficiente para "${item.name}". Disponível: ${previousStock}, Solicitado: ${item.quantity}.${saleRef}`);
+        }
+
         const newStock = previousStock - item.quantity;
 
         // Atualizar quantidade no estoque
@@ -2140,7 +2310,7 @@ app.post('/api/sales', async (req, res) => {
           data: {
             estoqueId: item.id,
             type: 'SALE',
-            quantity: -item.quantity, // negativo = saída
+            quantity: -item.quantity,
             previousStock: previousStock,
             newStock: newStock,
             description: `Venda #${sale.id} - ${item.name} (${item.quantity}x)`,
@@ -2148,6 +2318,75 @@ app.post('/api/sales', async (req, res) => {
             referenceType: 'Sale'
           }
         });
+      }
+
+      // 2b. Dar baixa no estoque dos componentes de composição
+      for (const item of items) {
+        if (!item.composicao) continue;
+        let selections;
+        try { selections = JSON.parse(item.composicao); } catch { continue; }
+        // selections = { [composicaoId]: [opcaoId, ...] }
+        const allOpcaoIds = Object.values(selections).flat().map(Number).filter(Boolean);
+        if (allOpcaoIds.length === 0) continue;
+        const opcoes = await tx.composicaoOpcao.findMany({
+          where: { id: { in: allOpcaoIds }, estoqueId: { not: null } }
+        });
+        for (const opcao of opcoes) {
+          const estoqueComp = await tx.estoque.findUnique({ where: { id: opcao.estoqueId } });
+          if (!estoqueComp) continue;
+          const needed = item.quantity; // 1 unidade do componente por item vendido
+          if (estoqueComp.quantity < needed) {
+            throw new Error(`Estoque insuficiente para o componente "${opcao.nome}" (${estoqueComp.name}). Disponível: ${estoqueComp.quantity}, Necessário: ${needed}.`);
+          }
+          const newQty = estoqueComp.quantity - needed;
+          await tx.estoque.update({ where: { id: opcao.estoqueId }, data: { quantity: newQty } });
+          await tx.stockMovement.create({
+            data: {
+              estoqueId: opcao.estoqueId,
+              type: 'SALE',
+              quantity: -needed,
+              previousStock: estoqueComp.quantity,
+              newStock: newQty,
+              description: `Venda #${sale.id} - Componente "${opcao.nome}" p/ ${item.name} (${needed}x)`,
+              referenceId: sale.id,
+              referenceType: 'Sale'
+            }
+          });
+        }
+      }
+
+      // 3. Se pendente, criar COMANDA (NÃO fiado imediatamente) - fiado só após 24h sem pagamento
+      if (pendente && pendente.clientId) {
+        await tx.pdvComanda.create({
+          data: {
+            clientId: pendente.clientId,
+            saleId: sale.id,
+            total: splitPay
+              ? parseFloat((splitPay.find(s => s.forma === "pendente") || {}).valor || 0)
+              : saleTotal,
+            status: "ABERTA",
+            items: {
+              create: items.map(item => ({
+                productName: item.name,
+                quantity: item.quantity,
+                unitPrice: item.price,
+                total: item.price * item.quantity,
+                estoqueId: item.id,
+              }))
+            }
+          }
+        });
+      }
+
+      // 4. Se cupom foi usado, incrementar vezesUsado
+      if (discount && discount.cupomCodigo) {
+        const cupom = await tx.pdvCupom.findFirst({ where: { codigo: discount.cupomCodigo } });
+        if (cupom) {
+          await tx.pdvCupom.update({
+            where: { id: cupom.id },
+            data: { vezesUsado: { increment: 1 } }
+          });
+        }
       }
 
       return sale;
@@ -2316,7 +2555,7 @@ app.post('/api/unit-equivalences', async (req, res) => {
   try {
     const { unitName, value } = req.body;
     
-    if (!unitName || !value || value <= 0) {
+    if (!unitName || value === undefined || value === null || parseFloat(value) < 0) {
       return res.status(400).json({ error: 'Nome da unidade e valor são obrigatórios' });
     }
 
@@ -2349,8 +2588,8 @@ app.put('/api/unit-equivalences/:unitName', async (req, res) => {
     const { unitName } = req.params;
     const { value } = req.body;
     
-    if (!value || value <= 0) {
-      return res.status(400).json({ error: 'Valor é obrigatório e deve ser maior que zero' });
+    if (value === undefined || value === null || parseFloat(value) < 0) {
+      return res.status(400).json({ error: 'Valor é obrigatório e deve ser maior ou igual a zero' });
     }
 
     const equivalence = await prisma.unitEquivalence.update({
@@ -2384,6 +2623,175 @@ app.delete('/api/unit-equivalences/:unitName', async (req, res) => {
     }
     console.error('Erro ao excluir equivalência:', error);
     res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
+// ===================== ROTAS DE COMPOSIÇÃO DE PRODUTOS =====================
+
+// Rotas de opções devem vir ANTES das rotas com :id para evitar conflitos de roteamento
+app.put('/api/composicoes/opcoes/:id', async (req, res) => {
+  try {
+    const { nome, valorExtra, disponivel, estoqueId } = req.body;
+    const updateData = {};
+    if (nome !== undefined) updateData.nome = nome;
+    if (valorExtra !== undefined) updateData.valorExtra = parseFloat(valorExtra) || 0;
+    if (disponivel !== undefined) updateData.disponivel = disponivel !== false && disponivel !== 0;
+    if (estoqueId !== undefined) updateData.estoqueId = estoqueId ? parseInt(estoqueId) : null;
+    const opcao = await prisma.composicaoOpcao.update({
+      where: { id: parseInt(req.params.id) },
+      data: updateData,
+      include: { estoque: { select: { id: true, name: true, quantity: true } } }
+    });
+    res.json(opcao);
+  } catch (error) {
+    res.status(500).json({ error: 'Erro ao atualizar opção', details: error.message });
+  }
+});
+
+app.delete('/api/composicoes/opcoes/:id', async (req, res) => {
+  try {
+    await prisma.composicaoOpcao.delete({ where: { id: parseInt(req.params.id) } });
+    res.json({ message: 'Opção excluída' });
+  } catch (error) {
+    res.status(500).json({ error: 'Erro ao excluir opção', details: error.message });
+  }
+});
+
+app.get('/api/composicoes/:estoqueId', async (req, res) => {
+  try {
+    const composicoes = await prisma.composicaoProduto.findMany({
+      where: { estoqueId: parseInt(req.params.estoqueId) },
+      include: { opcoes: { include: { estoque: { select: { id: true, name: true, quantity: true } } }, orderBy: { id: 'asc' } } },
+      orderBy: { ordem: 'asc' }
+    });
+    res.json(composicoes);
+  } catch (error) {
+    res.status(500).json({ error: 'Erro ao buscar composições', details: error.message });
+  }
+});
+
+app.post('/api/composicoes', async (req, res) => {
+  try {
+    const { estoqueId, nome, descricao, obrigatorio, multiplo, minOpcoes, maxOpcoes, ordem } = req.body;
+    if (!estoqueId || !nome) return res.status(400).json({ error: 'estoqueId e nome são obrigatórios' });
+    const comp = await prisma.composicaoProduto.create({
+      data: {
+        estoqueId: parseInt(estoqueId), nome, descricao: descricao || null,
+        obrigatorio: obrigatorio !== false, multiplo: !!multiplo,
+        minOpcoes: parseInt(minOpcoes) || 1, maxOpcoes: parseInt(maxOpcoes) || 1,
+        ordem: parseInt(ordem) || 0
+      },
+      include: { opcoes: true }
+    });
+    res.status(201).json(comp);
+  } catch (error) {
+    res.status(500).json({ error: 'Erro ao criar composição', details: error.message });
+  }
+});
+
+app.put('/api/composicoes/:id', async (req, res) => {
+  try {
+    const { nome, descricao, obrigatorio, multiplo, minOpcoes, maxOpcoes, ordem } = req.body;
+    const comp = await prisma.composicaoProduto.update({
+      where: { id: parseInt(req.params.id) },
+      data: { nome, descricao, obrigatorio: !!obrigatorio, multiplo: !!multiplo, minOpcoes: parseInt(minOpcoes) || 1, maxOpcoes: parseInt(maxOpcoes) || 1, ordem: parseInt(ordem) || 0 },
+      include: { opcoes: true }
+    });
+    res.json(comp);
+  } catch (error) {
+    res.status(500).json({ error: 'Erro ao atualizar composição', details: error.message });
+  }
+});
+
+app.delete('/api/composicoes/:id', async (req, res) => {
+  try {
+    await prisma.composicaoProduto.delete({ where: { id: parseInt(req.params.id) } });
+    res.json({ message: 'Composição excluída' });
+  } catch (error) {
+    res.status(500).json({ error: 'Erro ao excluir composição', details: error.message });
+  }
+});
+
+app.post('/api/composicoes/:id/opcoes', async (req, res) => {
+  try {
+    const { nome, valorExtra, disponivel, estoqueId } = req.body;
+    if (!nome) return res.status(400).json({ error: 'Nome da opção é obrigatório' });
+    const opcao = await prisma.composicaoOpcao.create({
+      data: {
+        composicaoId: parseInt(req.params.id),
+        nome,
+        valorExtra: parseFloat(valorExtra) || 0,
+        disponivel: disponivel !== false,
+        ...(estoqueId ? { estoqueId: parseInt(estoqueId) } : {})
+      },
+      include: { estoque: { select: { id: true, name: true, quantity: true } } }
+    });
+    res.status(201).json(opcao);
+  } catch (error) {
+    res.status(500).json({ error: 'Erro ao criar opção', details: error.message });
+  }
+});
+
+// Cria produto no catálogo + entrada no estoque + opção de composição em uma só transação
+app.post('/api/composicoes/:id/opcao-estoque', async (req, res) => {
+  try {
+    const composicaoId = parseInt(req.params.id);
+    const { nome, unit, quantity, value, valuecusto, categoryId, valorExtra } = req.body;
+    if (!nome || !unit || quantity == null) {
+      return res.status(400).json({ error: 'nome, unit e quantity são obrigatórios' });
+    }
+    const result = await prisma.$transaction(async (tx) => {
+      // 1. Criar produto no catálogo
+      const product = await tx.product.create({
+        data: {
+          name: nome,
+          quantity: parseInt(quantity) || 0,
+          unit,
+          value: parseFloat(value) || 0,
+          valuecusto: parseFloat(valuecusto) || 0,
+          categoryId: categoryId ? parseInt(categoryId) : null
+        }
+      });
+      // 2. Criar entrada no estoque
+      const estoqueItem = await tx.estoque.create({
+        data: {
+          productId: product.id,
+          name: nome,
+          quantity: parseInt(quantity) || 0,
+          unit,
+          value: parseFloat(value) || 0,
+          valuecusto: parseFloat(valuecusto) || 0,
+          categoria_Id: categoryId ? parseInt(categoryId) : null
+        }
+      });
+      // 3. Registrar movimentação inicial
+      await tx.stockMovement.create({
+        data: {
+          estoqueId: estoqueItem.id,
+          type: 'ENTRY',
+          quantity: parseInt(quantity) || 0,
+          previousStock: 0,
+          newStock: parseInt(quantity) || 0,
+          description: `Cadastro inicial — ${nome}`,
+          referenceType: 'Manual'
+        }
+      });
+      // 4. Criar opção de composição vinculada
+      const opcao = await tx.composicaoOpcao.create({
+        data: {
+          composicaoId,
+          nome,
+          valorExtra: parseFloat(valorExtra) || 0,
+          disponivel: true,
+          estoqueId: estoqueItem.id
+        },
+        include: { estoque: { select: { id: true, name: true, quantity: true } } }
+      });
+      return { product, estoqueItem, opcao };
+    });
+    res.status(201).json(result);
+  } catch (error) {
+    res.status(500).json({ error: 'Erro ao criar item de estoque e opção', details: error.message });
   }
 });
 
@@ -2712,19 +3120,21 @@ app.get("/api/employee-weekly-meta/:employeeId", async (req, res) => {
         // Se não existe meta específica, retornar valores padrão do funcionário
         const employee = await prisma.employee.findUnique({
           where: { id: employeeId },
-          select: { valorHora: true, metaHoras: true, bonificacao: true }
+          select: { valorHora: true, metaHoras: true, bonificacao: true, metasExtras: true }
         });
         
         return res.json({
           metaHoras: employee?.metaHoras || null,
           bonificacao: employee?.bonificacao || null,
           valorHora: employee?.valorHora || null,
+          metasExtras: employee?.metasExtras ? JSON.parse(employee.metasExtras) : null,
           isDefault: true
         });
       }
 
       return res.json({
         ...meta,
+        metasExtras: meta.metasExtras ? JSON.parse(meta.metasExtras) : null,
         isDefault: false
       });
     }
@@ -2747,19 +3157,21 @@ app.get("/api/employee-weekly-meta/:employeeId", async (req, res) => {
         // Se não existe meta específica, retornar valores padrão do funcionário
         const employee = await prisma.employee.findUnique({
           where: { id: employeeId },
-          select: { valorHora: true, metaHoras: true, bonificacao: true }
+          select: { valorHora: true, metaHoras: true, bonificacao: true, metasExtras: true }
         });
         
         return res.json({
           metaHoras: employee?.metaHoras || null,
           bonificacao: employee?.bonificacao || null,
           valorHora: employee?.valorHora || null,
+          metasExtras: employee?.metasExtras ? JSON.parse(employee.metasExtras) : null,
           isDefault: true
         });
       }
 
       return res.json({
         ...meta,
+        metasExtras: meta.metasExtras ? JSON.parse(meta.metasExtras) : null,
         isDefault: false
       });
     }
@@ -2785,7 +3197,7 @@ app.get("/api/employee-weekly-meta/:employeeId", async (req, res) => {
 // POST - Criar ou atualizar meta semanal
 app.post("/api/employee-weekly-meta", async (req, res) => {
   try {
-    const { employeeId, weekStart, metaHoras, bonificacao, valorHora, year, month } = req.body;
+    const { employeeId, weekStart, metaHoras, bonificacao, valorHora, year, month, metasExtras } = req.body;
 
     if (!employeeId || !weekStart || metaHoras === undefined || bonificacao === undefined || valorHora === undefined) {
       return res.status(400).json({ error: "Dados incompletos" });
@@ -2809,6 +3221,8 @@ app.post("/api/employee-weekly-meta", async (req, res) => {
       }
     });
 
+    const metasExtrasJson = metasExtras ? JSON.stringify(metasExtras) : null;
+
     let result;
     if (existingMeta) {
       // Atualizar meta existente
@@ -2818,7 +3232,8 @@ app.post("/api/employee-weekly-meta", async (req, res) => {
           weekEnd: weekEndDate,
           metaHoras: parseFloat(metaHoras),
           bonificacao: parseFloat(bonificacao),
-          valorHora: parseFloat(valorHora)
+          valorHora: parseFloat(valorHora),
+          metasExtras: metasExtrasJson
         }
       });
     } else {
@@ -2832,7 +3247,8 @@ app.post("/api/employee-weekly-meta", async (req, res) => {
           month: month || weekStartDate.getMonth() + 1,
           metaHoras: parseFloat(metaHoras),
           bonificacao: parseFloat(bonificacao),
-          valorHora: parseFloat(valorHora)
+          valorHora: parseFloat(valorHora),
+          metasExtras: metasExtrasJson
         }
       });
     }
@@ -3050,6 +3466,1091 @@ app.post("/api/migrate-employee-meta-history", async (req, res) => {
   }
 });
 
+// ROTAS DE PDV - MOVIMENTAÇÕES DE CAIXA
+
+// Buscar origens configuradas
+app.get("/api/pdv-origens", async (req, res) => {
+  try {
+    const origens = await prisma.pdvOrigemConfig.findMany({
+      where: { ativo: true },
+      orderBy: { nome: "asc" },
+    });
+    res.json(origens);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao buscar origens", details: error.message });
+  }
+});
+
+// Criar/gerenciar origens
+app.post("/api/pdv-origens", async (req, res) => {
+  try {
+    const { nome } = req.body;
+    const origem = await prisma.pdvOrigemConfig.create({ data: { nome } });
+    res.status(201).json(origem);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao criar origem", details: error.message });
+  }
+});
+
+app.delete("/api/pdv-origens/:id", async (req, res) => {
+  try {
+    await prisma.pdvOrigemConfig.delete({ where: { id: parseInt(req.params.id) } });
+    res.json({ message: "Origem excluída com sucesso" });
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao excluir origem", details: error.message });
+  }
+});
+
+// Registrar movimentação de caixa (ADD, SANGRIA, etc.)
+app.post("/api/pdv-caixa-movimento", async (req, res) => {
+  try {
+    const { tipo, valor, origens, observacao } = req.body;
+
+    // Extrair userId do token
+    let userId = null;
+    let userName = null;
+    try {
+      const authHeader = req.headers.authorization;
+      if (authHeader && authHeader.startsWith("Bearer ")) {
+        const token = authHeader.split(" ")[1];
+        const decoded = jwt.verify(token, SECRET_KEY);
+        userId = decoded.userId;
+        const user = await prisma.user.findUnique({ where: { id: userId } });
+        userName = user?.name || user?.username || null;
+      }
+    } catch (e) { /* ignora */ }
+
+    const movimento = await prisma.pdvCaixaMovimento.create({
+      data: {
+        tipo,
+        valor: parseFloat(valor),
+        userId,
+        userName,
+        observacao: observacao || null,
+        origens: {
+          create: origens.map((o) => ({
+            nome: o.nome,
+            valor: parseFloat(o.valor),
+          })),
+        },
+      },
+      include: { origens: true },
+    });
+
+    res.status(201).json(movimento);
+  } catch (error) {
+    console.error("Erro ao registrar movimentação:", error);
+    res.status(500).json({ error: "Erro ao registrar movimentação", details: error.message });
+  }
+});
+
+// Registrar VALE (sangria / retirada de caixa)
+app.post("/api/pdv-caixa-vale", async (req, res) => {
+  try {
+    const { valor, origens, observacao } = req.body;
+
+    if (!valor || parseFloat(valor) <= 0) {
+      return res.status(400).json({ error: "Valor inválido" });
+    }
+
+    // Extrair userId do token
+    let userId = null;
+    let userName = null;
+    let isAdmin = false;
+    try {
+      const authHeader = req.headers.authorization;
+      if (authHeader && authHeader.startsWith("Bearer ")) {
+        const token = authHeader.split(" ")[1];
+        const decoded = jwt.verify(token, SECRET_KEY);
+        userId = decoded.userId;
+        const user = await prisma.user.findUnique({ where: { id: userId } });
+        userName = user?.name || user?.username || null;
+        isAdmin = user?.acessos === true;
+      }
+    } catch (e) { /* ignora */ }
+
+    const origensPreenchidas = (origens || []).filter((o) => o.nome && parseFloat(o.valor) > 0);
+
+    // Criar movimento de caixa tipo VALE
+    const movimento = await prisma.pdvCaixaMovimento.create({
+      data: {
+        tipo: "VALE",
+        valor: parseFloat(valor),
+        userId,
+        userName,
+        observacao: observacao || null,
+        origens: origensPreenchidas.length > 0 ? {
+          create: origensPreenchidas.map((o) => ({
+            nome: o.nome,
+            valor: parseFloat(o.valor),
+          })),
+        } : undefined,
+      },
+      include: { origens: true },
+    });
+
+    // Se é admin, criar registro de despesa no módulo PESSOAL
+    let despesaPessoal = null;
+    if (isAdmin) {
+      const descParts = [];
+      if (origensPreenchidas.length > 0) {
+        descParts.push("Destino: " + origensPreenchidas.map(o => `${o.nome} (R$ ${parseFloat(o.valor).toFixed(2)})`).join(", "));
+      }
+      if (observacao) descParts.push(observacao);
+      if (userName) descParts.push(`Realizado por: ${userName}`);
+
+      despesaPessoal = await prisma.despPessoal.create({
+        data: {
+          nomeDespesa: "Vale / Sangria (PDV)",
+          valorDespesa: parseFloat(valor),
+          descDespesa: descParts.join(" | ") || null,
+          date: new Date(),
+          DespesaFixa: false,
+          tipoMovimento: "GASTO",
+          isVale: true,
+        },
+      });
+
+      // Criar registro de GANHO correspondente (fluxo padrão do VALE no Pessoal)
+      await prisma.despPessoal.create({
+        data: {
+          nomeDespesa: "VALE",
+          valorDespesa: parseFloat(valor),
+          descDespesa: `Vale referente a: Vale / Sangria (PDV)`,
+          date: new Date(),
+          DespesaFixa: false,
+          tipoMovimento: "GANHO",
+          isVale: true,
+        },
+      });
+    }
+
+    res.status(201).json({ movimento, despesaPessoal, isAdmin });
+  } catch (error) {
+    console.error("Erro ao registrar vale:", error);
+    res.status(500).json({ error: "Erro ao registrar vale", details: error.message });
+  }
+});
+
+// Buscar movimentações de caixa
+app.get("/api/pdv-caixa-movimento", async (req, res) => {
+  try {
+    const { tipo, dataInicio, dataFim } = req.query;
+    const where = {};
+    if (tipo) where.tipo = tipo;
+    if (dataInicio || dataFim) {
+      where.createdAt = {};
+      if (dataInicio) where.createdAt.gte = new Date(dataInicio);
+      if (dataFim) {
+        const fim = new Date(dataFim);
+        fim.setHours(23, 59, 59, 999);
+        where.createdAt.lte = fim;
+      }
+    }
+
+    const movimentos = await prisma.pdvCaixaMovimento.findMany({
+      where,
+      include: { origens: true },
+      orderBy: { createdAt: "desc" },
+      take: 100,
+    });
+    res.json(movimentos);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao buscar movimentações", details: error.message });
+  }
+});
+
+// Inicializar origens padrão
+app.post("/api/pdv-origens/init", async (req, res) => {
+  try {
+    const origensDefault = ["Cofre", "Banco", "Pessoal", "Troco Inicial"];
+    const results = [];
+    for (const nome of origensDefault) {
+      const o = await prisma.pdvOrigemConfig.upsert({
+        where: { nome },
+        update: {},
+        create: { nome, ativo: true },
+      });
+      results.push(o);
+    }
+    res.json(results);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao inicializar origens", details: error.message });
+  }
+});
+
+// ROTAS DE PRÊMIO (caça-níquel)
+app.post("/api/pdv-premio", async (req, res) => {
+  try {
+    const { imagem1, imagem2, valor, origens, observacao } = req.body;
+
+    if (!imagem1 || !imagem2) {
+      return res.status(400).json({ error: "As duas imagens são obrigatórias" });
+    }
+    if (!valor || parseFloat(valor) <= 0) {
+      return res.status(400).json({ error: "Valor inválido" });
+    }
+
+    // Extrair userId do token
+    let userId = null;
+    let userName = null;
+    try {
+      const authHeader = req.headers.authorization;
+      if (authHeader && authHeader.startsWith("Bearer ")) {
+        const token = authHeader.split(" ")[1];
+        const decoded = jwt.verify(token, SECRET_KEY);
+        userId = decoded.userId;
+        const user = await prisma.user.findUnique({ where: { id: userId } });
+        userName = user?.name || user?.username || null;
+      }
+    } catch (e) { /* ignora */ }
+
+    const origensPreenchidas = (origens || []).filter((o) => o.nome && parseFloat(o.valor) > 0);
+
+    const premio = await prisma.pdvPremio.create({
+      data: {
+        imagem1,
+        imagem2,
+        valor: parseFloat(valor),
+        observacao: observacao || null,
+        userId,
+        userName,
+        origens: origensPreenchidas.length > 0 ? {
+          create: origensPreenchidas.map((o) => ({
+            nome: o.nome,
+            valor: parseFloat(o.valor),
+          })),
+        } : undefined,
+      },
+      include: { origens: true },
+    });
+
+    res.status(201).json(premio);
+  } catch (error) {
+    console.error("Erro ao registrar prêmio:", error);
+    res.status(500).json({ error: "Erro ao registrar prêmio", details: error.message });
+  }
+});
+
+app.get("/api/pdv-premio", async (req, res) => {
+  try {
+    const { dataInicio, dataFim } = req.query;
+    const where = {};
+    if (dataInicio || dataFim) {
+      where.createdAt = {};
+      if (dataInicio) where.createdAt.gte = new Date(dataInicio);
+      if (dataFim) {
+        const fim = new Date(dataFim);
+        fim.setHours(23, 59, 59, 999);
+        where.createdAt.lte = fim;
+      }
+    }
+
+    const premios = await prisma.pdvPremio.findMany({
+      where,
+      include: { origens: true },
+      orderBy: { createdAt: "desc" },
+      take: 50,
+    });
+    // Retorna sem as imagens base64 no listing para performance
+    const premiosResumo = premios.map(p => ({
+      ...p,
+      imagem1: p.imagem1 ? "[imagem]" : null,
+      imagem2: p.imagem2 ? "[imagem]" : null,
+    }));
+    res.json(premiosResumo);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao buscar prêmios", details: error.message });
+  }
+});
+
+// ROTAS CONFIG VENDA — CUPONS
+app.get("/api/pdv-cupons", async (req, res) => {
+  try {
+    const cupons = await prisma.pdvCupom.findMany({ orderBy: { createdAt: "desc" } });
+    res.json(cupons);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao buscar cupons", details: error.message });
+  }
+});
+
+app.post("/api/pdv-cupons", async (req, res) => {
+  try {
+    const { codigo, tipo, valor, descricao, validoAte, limiteUso } = req.body;
+    if (!codigo || !tipo || valor === undefined) {
+      return res.status(400).json({ error: "Código, tipo e valor são obrigatórios" });
+    }
+    const cupom = await prisma.pdvCupom.create({
+      data: {
+        codigo: codigo.toUpperCase().trim(),
+        tipo,
+        valor: parseFloat(valor),
+        descricao: descricao || null,
+        validoAte: validoAte ? new Date(validoAte) : null,
+        limiteUso: limiteUso ? parseInt(limiteUso) : null,
+      },
+    });
+    res.status(201).json(cupom);
+  } catch (error) {
+    if (error.code === "P2002") {
+      return res.status(400).json({ error: "Já existe um cupom com esse código" });
+    }
+    res.status(500).json({ error: "Erro ao criar cupom", details: error.message });
+  }
+});
+
+app.put("/api/pdv-cupons/:id", async (req, res) => {
+  try {
+    const { ativo, codigo, tipo, valor, descricao, validoAte, limiteUso } = req.body;
+    const updateData = {};
+    if (ativo !== undefined) updateData.ativo = ativo;
+    if (codigo !== undefined) updateData.codigo = codigo.toUpperCase().trim();
+    if (tipo !== undefined) updateData.tipo = tipo;
+    if (valor !== undefined) updateData.valor = parseFloat(valor);
+    if (descricao !== undefined) updateData.descricao = descricao;
+    if (validoAte !== undefined) updateData.validoAte = validoAte ? new Date(validoAte) : null;
+    if (limiteUso !== undefined) updateData.limiteUso = limiteUso ? parseInt(limiteUso) : null;
+
+    const cupom = await prisma.pdvCupom.update({
+      where: { id: parseInt(req.params.id) },
+      data: updateData,
+    });
+    res.json(cupom);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao atualizar cupom", details: error.message });
+  }
+});
+
+app.delete("/api/pdv-cupons/:id", async (req, res) => {
+  try {
+    await prisma.pdvCupom.delete({ where: { id: parseInt(req.params.id) } });
+    res.json({ message: "Cupom excluído" });
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao excluir cupom", details: error.message });
+  }
+});
+
+// Validar cupom (para uso na venda)
+app.post("/api/pdv-cupons/validar", async (req, res) => {
+  try {
+    const { codigo } = req.body;
+    const cupom = await prisma.pdvCupom.findUnique({ where: { codigo: codigo.toUpperCase().trim() } });
+    if (!cupom) return res.status(404).json({ error: "Cupom não encontrado" });
+    if (!cupom.ativo) return res.status(400).json({ error: "Cupom desativado" });
+    if (cupom.validoAte && new Date() > new Date(cupom.validoAte)) {
+      return res.status(400).json({ error: "Cupom expirado" });
+    }
+    if (cupom.limiteUso && cupom.vezesUsado >= cupom.limiteUso) {
+      return res.status(400).json({ error: "Cupom atingiu o limite de uso" });
+    }
+    res.json(cupom);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao validar cupom", details: error.message });
+  }
+});
+
+// ROTAS CONFIG VENDA — TAXAS DE MÁQUINA
+app.get("/api/pdv-taxas", async (req, res) => {
+  try {
+    const taxas = await prisma.pdvTaxaMaquina.findMany({ orderBy: { createdAt: "desc" } });
+    res.json(taxas);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao buscar taxas", details: error.message });
+  }
+});
+
+app.post("/api/pdv-taxas", async (req, res) => {
+  try {
+    const { nome, tipo, valor } = req.body;
+    if (!nome || !tipo || valor === undefined) {
+      return res.status(400).json({ error: "Nome, tipo e valor são obrigatórios" });
+    }
+    const taxa = await prisma.pdvTaxaMaquina.create({
+      data: { nome, tipo, valor: parseFloat(valor) },
+    });
+    res.status(201).json(taxa);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao criar taxa", details: error.message });
+  }
+});
+
+app.put("/api/pdv-taxas/:id", async (req, res) => {
+  try {
+    const { nome, tipo, valor, ativo } = req.body;
+    const updateData = {};
+    if (nome !== undefined) updateData.nome = nome;
+    if (tipo !== undefined) updateData.tipo = tipo;
+    if (valor !== undefined) updateData.valor = parseFloat(valor);
+    if (ativo !== undefined) updateData.ativo = ativo;
+    const taxa = await prisma.pdvTaxaMaquina.update({
+      where: { id: parseInt(req.params.id) },
+      data: updateData,
+    });
+    res.json(taxa);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao atualizar taxa", details: error.message });
+  }
+});
+
+app.delete("/api/pdv-taxas/:id", async (req, res) => {
+  try {
+    await prisma.pdvTaxaMaquina.delete({ where: { id: parseInt(req.params.id) } });
+    res.json({ message: "Taxa excluída" });
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao excluir taxa", details: error.message });
+  }
+});
+
+// ROTAS CONFIG VENDA — CONFIGURAÇÕES GERAIS (limites, etc)
+app.get("/api/pdv-config", async (req, res) => {
+  try {
+    const configs = await prisma.pdvConfigVenda.findMany({ orderBy: { chave: "asc" } });
+    res.json(configs);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao buscar configurações", details: error.message });
+  }
+});
+
+app.put("/api/pdv-config/:chave", async (req, res) => {
+  try {
+    const { valor } = req.body;
+    const config = await prisma.pdvConfigVenda.upsert({
+      where: { chave: req.params.chave },
+      update: { valor: String(valor) },
+      create: { chave: req.params.chave, valor: String(valor), descricao: req.body.descricao || null },
+    });
+    res.json(config);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao salvar configuração", details: error.message });
+  }
+});
+
+app.post("/api/pdv-config/init", async (req, res) => {
+  try {
+    const defaults = [
+      { chave: "limite_comanda", valor: "500", descricao: "Valor máximo permitido por comanda aberta (R$)" },
+      { chave: "max_comandas_abertas", valor: "10", descricao: "Número máximo de comandas abertas simultaneamente" },
+      { chave: "dias_vencimento_comanda", valor: "30", descricao: "Dias até uma comanda ser considerada vencida" },
+    ];
+    const results = [];
+    for (const d of defaults) {
+      const c = await prisma.pdvConfigVenda.upsert({
+        where: { chave: d.chave },
+        update: {},
+        create: d,
+      });
+      results.push(c);
+    }
+    res.json(results);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao inicializar configurações", details: error.message });
+  }
+});
+
+// ROTAS CONFIG VENDA — FORMAS DE PAGAMENTO
+app.get("/api/pdv-formas-pagamento", async (req, res) => {
+  try {
+    const formas = await prisma.pdvFormaPagamento.findMany({ orderBy: { nome: "asc" } });
+    res.json(formas);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao buscar formas de pagamento", details: error.message });
+  }
+});
+
+app.post("/api/pdv-formas-pagamento", async (req, res) => {
+  try {
+    const { nome } = req.body;
+    if (!nome || !nome.trim()) {
+      return res.status(400).json({ error: "Nome é obrigatório" });
+    }
+    const valor = nome.trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, "_");
+    const forma = await prisma.pdvFormaPagamento.create({
+      data: { nome: nome.trim(), valor },
+    });
+    res.status(201).json(forma);
+  } catch (error) {
+    if (error.code === "P2002") {
+      return res.status(400).json({ error: "Já existe uma forma de pagamento com esse nome" });
+    }
+    res.status(500).json({ error: "Erro ao criar forma de pagamento", details: error.message });
+  }
+});
+
+app.put("/api/pdv-formas-pagamento/:id", async (req, res) => {
+  try {
+    const { ativo } = req.body;
+    const forma = await prisma.pdvFormaPagamento.update({
+      where: { id: parseInt(req.params.id) },
+      data: { ativo },
+    });
+    res.json(forma);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao atualizar forma de pagamento", details: error.message });
+  }
+});
+
+app.delete("/api/pdv-formas-pagamento/:id", async (req, res) => {
+  try {
+    await prisma.pdvFormaPagamento.delete({ where: { id: parseInt(req.params.id) } });
+    res.json({ message: "Forma de pagamento excluída" });
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao excluir forma de pagamento", details: error.message });
+  }
+});
+
+app.post("/api/pdv-formas-pagamento/init", async (req, res) => {
+  try {
+    const defaults = [
+      { nome: "Dinheiro", valor: "dinheiro" },
+      { nome: "Cartão", valor: "cartao" },
+      { nome: "PIX", valor: "pix" },
+      { nome: "Fiado", valor: "fiado" },
+    ];
+    const results = [];
+    for (const d of defaults) {
+      const f = await prisma.pdvFormaPagamento.upsert({
+        where: { nome: d.nome },
+        update: {},
+        create: { nome: d.nome, valor: d.valor, ativo: true },
+      });
+      results.push(f);
+    }
+    res.json(results);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao inicializar formas de pagamento", details: error.message });
+  }
+});
+
+// ========== ROTAS DE COMANDAS PDV ==========
+
+// Converter comandas com 24h+ sem pagamento para fiado
+const converterComandasExpiradas = async () => {
+  try {
+    const limite24h = new Date();
+    limite24h.setHours(limite24h.getHours() - 24);
+
+    const expiradas = await prisma.pdvComanda.findMany({
+      where: { status: "ABERTA", createdAt: { lt: limite24h } },
+      include: { items: true, client: true },
+    });
+
+    for (const comanda of expiradas) {
+      await prisma.$transaction(async (tx) => {
+        // Criar Purchase (fiado) para cada item da comanda
+        for (const item of comanda.items) {
+          await tx.purchase.create({
+            data: {
+              product: item.productName,
+              quantity: item.quantity,
+              total: item.total,
+              date: comanda.createdAt.toISOString(),
+              clientId: comanda.clientId,
+            }
+          });
+        }
+        // Atualizar totalDebt do cliente
+        await tx.client.update({
+          where: { id: comanda.clientId },
+          data: { totalDebt: { increment: comanda.total } }
+        });
+        // Marcar comanda como FIADO
+        await tx.pdvComanda.update({
+          where: { id: comanda.id },
+          data: { status: "FIADO" }
+        });
+      });
+    }
+
+    return expiradas.length;
+  } catch (error) {
+    console.error("Erro ao converter comandas expiradas:", error);
+    return 0;
+  }
+};
+
+// Buscar todas as comandas abertas (verifica expiradas antes)
+app.get("/api/pdv-comandas", async (req, res) => {
+  try {
+    // Primeiro converte as expiradas
+    await converterComandasExpiradas();
+
+    const { status } = req.query;
+    const where = {};
+    if (status) {
+      where.status = status;
+    } else {
+      where.status = "ABERTA";
+    }
+
+    const comandas = await prisma.pdvComanda.findMany({
+      where,
+      include: {
+        client: true,
+        items: true,
+      },
+      orderBy: { createdAt: "desc" },
+    });
+    res.json(comandas);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao buscar comandas", details: error.message });
+  }
+});
+
+// Buscar comanda específica
+app.get("/api/pdv-comandas/:id", async (req, res) => {
+  try {
+    const comanda = await prisma.pdvComanda.findUnique({
+      where: { id: parseInt(req.params.id) },
+      include: { client: true, items: true },
+    });
+    if (!comanda) return res.status(404).json({ error: "Comanda não encontrada" });
+    res.json(comanda);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao buscar comanda", details: error.message });
+  }
+});
+
+// Adicionar itens a uma comanda existente
+app.post("/api/pdv-comandas/:id/items", async (req, res) => {
+  try {
+    const { items } = req.body;
+    const comanda = await prisma.pdvComanda.findUnique({ where: { id: parseInt(req.params.id) } });
+    if (!comanda) return res.status(404).json({ error: "Comanda não encontrada" });
+    if (comanda.status !== "ABERTA") return res.status(400).json({ error: "Comanda já foi fechada" });
+
+    const totalAdicionado = items.reduce((s, i) => s + (i.price * i.quantity), 0);
+
+    const updated = await prisma.$transaction(async (tx) => {
+      // Adicionar itens
+      for (const item of items) {
+        await tx.pdvComandaItem.create({
+          data: {
+            comandaId: comanda.id,
+            productName: item.name,
+            quantity: item.quantity,
+            unitPrice: item.price,
+            total: item.price * item.quantity,
+            estoqueId: item.id || null,
+          }
+        });
+        // Dar baixa no estoque
+        if (item.id) {
+          const estoqueItem = await tx.estoque.findUnique({ where: { id: item.id } });
+          if (estoqueItem && estoqueItem.quantity >= item.quantity) {
+            const prev = estoqueItem.quantity;
+            const novo = prev - item.quantity;
+            await tx.estoque.update({ where: { id: item.id }, data: { quantity: novo } });
+            await tx.stockMovement.create({
+              data: {
+                estoqueId: item.id, type: 'SALE', quantity: -item.quantity,
+                previousStock: prev, newStock: novo,
+                description: `Comanda #${comanda.id} - ${item.name} (${item.quantity}x)`,
+                referenceType: 'Comanda'
+              }
+            });
+          }
+        }
+      }
+      // Atualizar total da comanda
+      return tx.pdvComanda.update({
+        where: { id: comanda.id },
+        data: { total: { increment: totalAdicionado } },
+        include: { client: true, items: true },
+      });
+    });
+
+    res.json(updated);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao adicionar itens", details: error.message });
+  }
+});
+
+// Fechar/Pagar comanda
+app.put("/api/pdv-comandas/:id/fechar", async (req, res) => {
+  try {
+    const { paymentMethod } = req.body;
+    const comanda = await prisma.pdvComanda.findUnique({
+      where: { id: parseInt(req.params.id) },
+      include: { items: true, client: true },
+    });
+    if (!comanda) return res.status(404).json({ error: "Comanda não encontrada" });
+    if (comanda.status !== "ABERTA") return res.status(400).json({ error: "Comanda já foi fechada" });
+
+    const updated = await prisma.pdvComanda.update({
+      where: { id: comanda.id },
+      data: {
+        status: "PAGA",
+        paymentMethod: paymentMethod || "dinheiro",
+        paidAt: new Date(),
+      },
+      include: { client: true, items: true },
+    });
+
+    res.json(updated);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao fechar comanda", details: error.message });
+  }
+});
+
+// Buscar comandas abertas agrupadas por cliente (para o painel de config)
+app.get("/api/pdv-comandas-pendentes", async (req, res) => {
+  try {
+    await converterComandasExpiradas();
+
+    const comandas = await prisma.pdvComanda.findMany({
+      where: { status: "ABERTA" },
+      include: { client: true, items: true },
+      orderBy: { createdAt: "desc" },
+    });
+
+    // Agrupar por cliente
+    const clientMap = {};
+    for (const c of comandas) {
+      if (!c.client) continue; // Pular comandas sem cliente válido
+      if (!clientMap[c.clientId]) {
+        clientMap[c.clientId] = {
+          id: c.clientId,
+          name: c.client.name || "Cliente sem nome",
+          totalDebt: c.client.totalDebt || 0,
+          comandas: [],
+          totalComandas: 0,
+        };
+      }
+      clientMap[c.clientId].comandas.push(c);
+      clientMap[c.clientId].totalComandas += c.total;
+    }
+
+    res.json(Object.values(clientMap));
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao buscar comandas pendentes", details: error.message });
+  }
+});
+
+// ===================== ROTAS CAIXA CONTROLE (PDV) =====================
+
+// Obter caixa atual (aberto) ou último fechado
+app.get("/api/pdv-caixa-controle/atual", async (req, res) => {
+  try {
+    const caixaAberto = await prisma.pdvCaixaControle.findFirst({
+      where: { status: "ABERTO" },
+      include: { transacoes: { orderBy: { createdAt: "desc" } } },
+      orderBy: { abertoEm: "desc" },
+    });
+    if (caixaAberto) {
+      // Calcular saldo atual
+      const entradas = caixaAberto.transacoes.filter(t => t.tipo === "ENTRADA").reduce((s, t) => s + t.valor, 0);
+      const saidas = caixaAberto.transacoes.filter(t => t.tipo === "SAIDA").reduce((s, t) => s + t.valor, 0);
+      // saldoInicial já está incluído como transação ABERTURA (ENTRADA), não somar duas vezes
+      const saldoAtual = entradas - saidas;
+      const horasAberto = (new Date() - new Date(caixaAberto.abertoEm)) / (1000 * 60 * 60);
+      return res.json({ ...caixaAberto, saldoAtual, totalEntradas: entradas, totalSaidas: saidas, horasAberto });
+    }
+    // Se não há caixa aberto, retorna o último fechado
+    const ultimoFechado = await prisma.pdvCaixaControle.findFirst({
+      where: { status: "FECHADO" },
+      orderBy: { fechadoEm: "desc" },
+    });
+    res.json({ caixaAberto: null, ultimoFechado });
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao buscar caixa atual", details: error.message });
+  }
+});
+
+// Histórico de caixas
+app.get("/api/pdv-caixa-controle/historico", async (req, res) => {
+  try {
+    const { page = 1, limit = 20 } = req.query;
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const [caixas, total] = await Promise.all([
+      prisma.pdvCaixaControle.findMany({
+        orderBy: { abertoEm: "desc" },
+        skip,
+        take: parseInt(limit),
+        include: { transacoes: { orderBy: { createdAt: "desc" } } },
+      }),
+      prisma.pdvCaixaControle.count(),
+    ]);
+    res.json({ caixas, total, pages: Math.ceil(total / parseInt(limit)) });
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao buscar histórico", details: error.message });
+  }
+});
+
+// Abrir novo caixa
+app.post("/api/pdv-caixa-controle/abrir", async (req, res) => {
+  try {
+    const { saldoInicial, observacao } = req.body;
+
+    // Verificar se já existe caixa aberto
+    const caixaAberto = await prisma.pdvCaixaControle.findFirst({ where: { status: "ABERTO" } });
+    if (caixaAberto) {
+      return res.status(400).json({ error: "Já existe um caixa aberto! Feche-o antes de abrir um novo." });
+    }
+
+    // Extrair userId do token
+    let userId = null;
+    let userName = null;
+    try {
+      const authHeader = req.headers.authorization;
+      if (authHeader && authHeader.startsWith("Bearer ")) {
+        const token = authHeader.split(" ")[1];
+        const decoded = jwt.verify(token, SECRET_KEY);
+        userId = decoded.userId;
+        const user = await prisma.user.findUnique({ where: { id: userId } });
+        userName = user?.name || user?.username || null;
+      }
+    } catch (e) { /* ignora */ }
+
+    const novoCaixa = await prisma.pdvCaixaControle.create({
+      data: {
+        saldoInicial: parseFloat(saldoInicial) || 0,
+        observacao: observacao || null,
+        abertoPorId: userId,
+        abertoPorNome: userName,
+        transacoes: parseFloat(saldoInicial) > 0 ? {
+          create: {
+            tipo: "ENTRADA",
+            categoria: "ABERTURA",
+            valor: parseFloat(saldoInicial),
+            descricao: "Saldo inicial de abertura",
+            userId,
+            userName,
+          }
+        } : undefined,
+      },
+      include: { transacoes: true },
+    });
+
+    res.status(201).json(novoCaixa);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao abrir caixa", details: error.message });
+  }
+});
+
+// Fechar caixa
+app.put("/api/pdv-caixa-controle/fechar", async (req, res) => {
+  try {
+    const { observacao } = req.body;
+
+    const caixaAberto = await prisma.pdvCaixaControle.findFirst({
+      where: { status: "ABERTO" },
+      include: { transacoes: true },
+    });
+    if (!caixaAberto) {
+      return res.status(400).json({ error: "Nenhum caixa aberto para fechar." });
+    }
+
+    let userId = null;
+    let userName = null;
+    try {
+      const authHeader = req.headers.authorization;
+      if (authHeader && authHeader.startsWith("Bearer ")) {
+        const token = authHeader.split(" ")[1];
+        const decoded = jwt.verify(token, SECRET_KEY);
+        userId = decoded.userId;
+        const user = await prisma.user.findUnique({ where: { id: userId } });
+        userName = user?.name || user?.username || null;
+      }
+    } catch (e) { /* ignora */ }
+
+    const entradas = caixaAberto.transacoes.filter(t => t.tipo === "ENTRADA").reduce((s, t) => s + t.valor, 0);
+    const saidas = caixaAberto.transacoes.filter(t => t.tipo === "SAIDA").reduce((s, t) => s + t.valor, 0);
+    const saldoFinal = caixaAberto.saldoInicial + entradas - saidas;
+
+    const caixaFechado = await prisma.pdvCaixaControle.update({
+      where: { id: caixaAberto.id },
+      data: {
+        status: "FECHADO",
+        saldoFinal,
+        totalEntradas: entradas,
+        totalSaidas: saidas,
+        fechadoPorId: userId,
+        fechadoPorNome: userName,
+        fechadoEm: new Date(),
+        observacao: observacao ? `${caixaAberto.observacao || ""} | Fechamento: ${observacao}`.trim() : caixaAberto.observacao,
+      },
+      include: { transacoes: true },
+    });
+
+    res.json(caixaFechado);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao fechar caixa", details: error.message });
+  }
+});
+
+// Registrar transação no caixa aberto
+app.post("/api/pdv-caixa-controle/transacao", async (req, res) => {
+  try {
+    const { tipo, categoria, valor, descricao } = req.body;
+
+    if (!tipo || !categoria || !valor || parseFloat(valor) <= 0) {
+      return res.status(400).json({ error: "Tipo, categoria e valor são obrigatórios." });
+    }
+
+    const caixaAberto = await prisma.pdvCaixaControle.findFirst({ where: { status: "ABERTO" } });
+    if (!caixaAberto) {
+      return res.status(400).json({ error: "Nenhum caixa aberto. Abra um caixa antes de registrar transações." });
+    }
+
+    let userId = null;
+    let userName = null;
+    try {
+      const authHeader = req.headers.authorization;
+      if (authHeader && authHeader.startsWith("Bearer ")) {
+        const token = authHeader.split(" ")[1];
+        const decoded = jwt.verify(token, SECRET_KEY);
+        userId = decoded.userId;
+        const user = await prisma.user.findUnique({ where: { id: userId } });
+        userName = user?.name || user?.username || null;
+      }
+    } catch (e) { /* ignora */ }
+
+    const transacao = await prisma.pdvCaixaTransacao.create({
+      data: {
+        caixaId: caixaAberto.id,
+        tipo: tipo.toUpperCase(),
+        categoria: categoria.toUpperCase(),
+        valor: parseFloat(valor),
+        descricao: descricao || null,
+        userId,
+        userName,
+      },
+    });
+
+    res.status(201).json(transacao);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao registrar transação", details: error.message });
+  }
+});
+
+// Obter transações do caixa atual
+app.get("/api/pdv-caixa-controle/:id/transacoes", async (req, res) => {
+  try {
+    const transacoes = await prisma.pdvCaixaTransacao.findMany({
+      where: { caixaId: parseInt(req.params.id) },
+      orderBy: { createdAt: "desc" },
+    });
+    res.json(transacoes);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao buscar transações", details: error.message });
+  }
+});
+
+// ===================== ROTAS GASTOS BAR (PDV) =====================
+
+// Listar gastos bar agrupados por semana
+app.get("/api/pdv-gastos-bar", async (req, res) => {
+  try {
+    const { tipo, semanas = 8 } = req.query;
+    const where = {};
+    if (tipo) where.tipo = tipo;
+
+    const gastos = await prisma.pdvGastoBar.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+    });
+
+    // Agrupar por semana (segunda a domingo)
+    const getWeekKey = (date) => {
+      const d = new Date(date);
+      const day = d.getDay();
+      const diff = d.getDate() - day + (day === 0 ? -6 : 1); // segunda
+      const monday = new Date(d.setDate(diff));
+      monday.setHours(0, 0, 0, 0);
+      return monday.toISOString().split("T")[0];
+    };
+
+    const semanasMap = {};
+    for (const g of gastos) {
+      const weekKey = getWeekKey(g.createdAt);
+      if (!semanasMap[weekKey]) semanasMap[weekKey] = { semana: weekKey, produtos: [], descontos: [], totalProdutos: 0, totalDescontos: 0, total: 0 };
+      if (g.tipo === "PRODUTO") {
+        semanasMap[weekKey].produtos.push(g);
+        semanasMap[weekKey].totalProdutos += g.valorTotal;
+      } else {
+        semanasMap[weekKey].descontos.push(g);
+        semanasMap[weekKey].totalDescontos += g.valorTotal;
+      }
+      semanasMap[weekKey].total += g.valorTotal;
+    }
+
+    const result = Object.values(semanasMap)
+      .sort((a, b) => b.semana.localeCompare(a.semana))
+      .slice(0, parseInt(semanas));
+
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao buscar gastos bar", details: error.message });
+  }
+});
+
+// Registrar gasto bar (produto pego por funcionário ou desconto dado)
+app.post("/api/pdv-gastos-bar", async (req, res) => {
+  try {
+    const { tipo, funcionario, funcionarioId, descricao, quantidade, valorUnitario, valorTotal, saleId } = req.body;
+
+    if (!tipo || !funcionario || !valorTotal) {
+      return res.status(400).json({ error: "Tipo, funcionário e valor total são obrigatórios." });
+    }
+
+    const gasto = await prisma.pdvGastoBar.create({
+      data: {
+        tipo,
+        funcionario,
+        funcionarioId: funcionarioId || null,
+        descricao: descricao || null,
+        quantidade: quantidade ? parseFloat(quantidade) : null,
+        valorUnitario: valorUnitario ? parseFloat(valorUnitario) : null,
+        valorTotal: parseFloat(valorTotal),
+        saleId: saleId || null,
+      },
+    });
+
+    res.status(201).json(gasto);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao registrar gasto bar", details: error.message });
+  }
+});
+
+// Excluir gasto bar
+app.delete("/api/pdv-gastos-bar/:id", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    await prisma.pdvGastoBar.delete({ where: { id } });
+    res.json({ message: "Gasto excluído com sucesso" });
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao excluir gasto", details: error.message });
+  }
+});
+
+// Resumo por funcionário
+app.get("/api/pdv-gastos-bar/resumo", async (req, res) => {
+  try {
+    const { de, ate } = req.query;
+    const where = {};
+    if (de || ate) {
+      where.createdAt = {};
+      if (de) where.createdAt.gte = new Date(de);
+      if (ate) where.createdAt.lte = new Date(ate + "T23:59:59.999Z");
+    }
+
+    const gastos = await prisma.pdvGastoBar.findMany({ where, orderBy: { createdAt: "desc" } });
+
+    const porFunc = {};
+    for (const g of gastos) {
+      if (!porFunc[g.funcionario]) porFunc[g.funcionario] = { funcionario: g.funcionario, totalProdutos: 0, totalDescontos: 0, total: 0, itens: [] };
+      porFunc[g.funcionario].itens.push(g);
+      if (g.tipo === "PRODUTO") porFunc[g.funcionario].totalProdutos += g.valorTotal;
+      else porFunc[g.funcionario].totalDescontos += g.valorTotal;
+      porFunc[g.funcionario].total += g.valorTotal;
+    }
+
+    res.json(Object.values(porFunc).sort((a, b) => b.total - a.total));
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao buscar resumo", details: error.message });
+  }
+});
+
 // ROTAS DE AUDITORIA
 app.get("/api/auditoria", async (req, res) => {
   try {
@@ -3232,6 +4733,10 @@ const limparAuditoriaAntiga = async () => {
 // Executa limpeza ao iniciar o servidor e depois a cada 24h
 limparAuditoriaAntiga();
 setInterval(limparAuditoriaAntiga, 24 * 60 * 60 * 1000);
+
+// Verifica comandas expiradas ao iniciar e a cada 1h
+converterComandasExpiradas().then(n => { if (n > 0) console.log(`[Comandas] ${n} comandas convertidas para fiado.`); });
+setInterval(() => converterComandasExpiradas(), 60 * 60 * 1000);
 
 app.listen(port, () => {
   console.log(`Server tá on krai --> http://localhost:${port}`);

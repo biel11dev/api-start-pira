@@ -29,6 +29,7 @@ model Client {
   updatedAt DateTime @updatedAt
   Payment   Payment[]
   Purchase  Purchase[]
+  Comanda   PdvComanda[]
 }
 
 model DailyReading {
@@ -110,6 +111,8 @@ model Estoque {
   valuecusto Float
   stockMovements StockMovement[]
   saleItems      SaleItem[]
+  composicoes    ComposicaoProduto[]
+  composicaoOpcoes ComposicaoOpcao[]
 
   @@index([productId])
 }
@@ -154,6 +157,7 @@ model Employee {
   valorHora   Float        @default(0) // Valor por hora do funcionário
   metaHoras   Float?       // Meta de horas semanais para bonificação (ATUAL)
   bonificacao Float?       // Valor da bonificação semanal
+  metasExtras String?      // JSON: array de {metaHoras, bonificacao} para metas adicionais
   contato     String?      // Contato do funcionário
   dataEntrada DateTime?    // Data de entrada do funcionário
   ativo       Boolean      @default(true) // Status do funcionário
@@ -198,6 +202,7 @@ model EmployeeWeeklyMeta {
   metaHoras   Float    // Meta de horas semanais
   bonificacao Float    // Valor da bonificação semanal
   valorHora   Float    // Valor por hora (snapshot do momento)
+  metasExtras String?  // JSON: array de {metaHoras, bonificacao} para metas adicionais
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   employee    Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
@@ -244,6 +249,7 @@ model SaleItem {
   quantity    Float
   unitPrice   Float
   total       Float
+  composicao  String?  // JSON com opções selecionadas pelo cliente
   sale        Sale     @relation(fields: [saleId], references: [id])
   estoque     Estoque  @relation(fields: [estoqueId], references: [id])
 }
@@ -321,4 +327,231 @@ model AuditoriaConfig {
   ativo       Boolean  @default(true) // Se o módulo deve ser auditado
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+}
+
+model PdvCaixaMovimento {
+  id          Int      @id @default(autoincrement())
+  tipo        String   // "ADD", "SANGRIA", etc.
+  valor       Float
+  origens     PdvCaixaOrigem[]
+  userId      Int?
+  userName    String?
+  observacao  String?
+  createdAt   DateTime @default(now())
+
+  @@index([tipo])
+  @@index([createdAt])
+}
+
+model PdvCaixaOrigem {
+  id            Int      @id @default(autoincrement())
+  movimentoId   Int
+  movimento     PdvCaixaMovimento @relation(fields: [movimentoId], references: [id], onDelete: Cascade)
+  nome          String   // Nome da origem (ex: "Cofre", "Banco", "Pessoal")
+  valor         Float
+  createdAt     DateTime @default(now())
+
+  @@index([movimentoId])
+}
+
+model PdvOrigemConfig {
+  id        Int      @id @default(autoincrement())
+  nome      String   @unique
+  ativo     Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model PdvPremio {
+  id          Int      @id @default(autoincrement())
+  imagem1     String   @db.Text // Base64 - prova do ganho no caça-níquel
+  imagem2     String   @db.Text // Base64 - prova da baixa do valor no jogo
+  valor       Float
+  observacao  String?
+  userId      Int?
+  userName    String?
+  origens     PdvPremioOrigem[]
+  createdAt   DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+model PdvPremioOrigem {
+  id          Int      @id @default(autoincrement())
+  premioId    Int
+  premio      PdvPremio @relation(fields: [premioId], references: [id], onDelete: Cascade)
+  nome        String
+  valor       Float
+  createdAt   DateTime @default(now())
+
+  @@index([premioId])
+}
+
+model PdvCupom {
+  id              Int       @id @default(autoincrement())
+  codigo          String    @unique
+  tipo            String    // "PERCENTUAL" ou "FIXO"
+  valor           Float     // Percentual (ex: 10) ou valor fixo (ex: 5.00)
+  descricao       String?
+  validoAte       DateTime?
+  limiteUso       Int?      // null = ilimitado
+  vezesUsado      Int       @default(0)
+  ativo           Boolean   @default(true)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([codigo])
+  @@index([ativo])
+}
+
+model PdvTaxaMaquina {
+  id          Int      @id @default(autoincrement())
+  nome        String   // Ex: "Taxa cartão crédito", "Taxa PIX"
+  tipo        String   // "PERCENTUAL" ou "FIXO"
+  valor       Float
+  ativo       Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model PdvConfigVenda {
+  id              Int      @id @default(autoincrement())
+  chave           String   @unique  // Ex: "limite_comanda", "max_comandas_abertas"
+  valor           String   // Armazena o valor como string (flex)
+  descricao       String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model PdvFormaPagamento {
+  id        Int      @id @default(autoincrement())
+  nome      String   @unique  // Ex: "Dinheiro", "Cartão", "PIX", "Fiado"
+  valor     String   // valor interno usado no sistema (ex: "dinheiro", "cartao", "pix", "fiado")
+  ativo     Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model PdvComanda {
+  id            Int               @id @default(autoincrement())
+  clientId      Int
+  client        Client            @relation(fields: [clientId], references: [id])
+  saleId        Int?              // Venda que originou a comanda
+  total         Float
+  status        String            @default("ABERTA") // "ABERTA", "PAGA", "FIADO"
+  paymentMethod String?           // Preenchido quando paga
+  items         PdvComandaItem[]
+  createdAt     DateTime          @default(now())
+  paidAt        DateTime?
+  updatedAt     DateTime          @updatedAt
+
+  @@index([clientId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model PdvComandaItem {
+  id          Int        @id @default(autoincrement())
+  comandaId   Int
+  comanda     PdvComanda @relation(fields: [comandaId], references: [id], onDelete: Cascade)
+  productName String
+  quantity    Float
+  unitPrice   Float
+  total       Float
+  estoqueId   Int?
+  createdAt   DateTime   @default(now())
+
+  @@index([comandaId])
+}
+
+model PdvCaixaControle {
+  id              Int       @id @default(autoincrement())
+  status          String    @default("ABERTO") // "ABERTO", "FECHADO"
+  saldoInicial    Float     @default(0)
+  saldoFinal      Float?
+  totalEntradas   Float     @default(0)
+  totalSaidas     Float     @default(0)
+  observacao      String?
+  abertoPorId     Int?
+  abertoPorNome   String?
+  fechadoPorId    Int?
+  fechadoPorNome  String?
+  abertoEm        DateTime  @default(now())
+  fechadoEm       DateTime?
+  transacoes      PdvCaixaTransacao[]
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([status])
+  @@index([abertoEm])
+}
+
+model PdvCaixaTransacao {
+  id          Int      @id @default(autoincrement())
+  caixaId     Int
+  caixa       PdvCaixaControle @relation(fields: [caixaId], references: [id], onDelete: Cascade)
+  tipo        String   // "ENTRADA", "SAIDA"
+  categoria   String   // "VENDA", "SANGRIA", "VALE", "ADD", "PREMIO", "TROCO", "ABERTURA", "OUTRO"
+  valor       Float
+  descricao   String?
+  userId      Int?
+  userName    String?
+  createdAt   DateTime @default(now())
+
+  @@index([caixaId])
+  @@index([tipo])
+  @@index([createdAt])
+}
+
+model PdvGastoBar {
+  id            Int      @id @default(autoincrement())
+  tipo          String   // "PRODUTO" ou "DESCONTO"
+  funcionarioId Int?
+  funcionario   String   // nome do funcionário
+  descricao     String?  // nome do produto ou descrição do desconto
+  quantidade    Float?   // qtd de produtos
+  valorUnitario Float?   // valor unitário do produto
+  valorTotal    Float    // valor total do gasto/desconto
+  saleId        Int?     // venda que originou o desconto
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([tipo])
+  @@index([funcionarioId])
+  @@index([createdAt])
+}
+
+// ===== COMPOSIÇÃO DE PRODUTOS (componentes/variantes) =====
+
+model ComposicaoProduto {
+  id          Int      @id @default(autoincrement())
+  estoqueId   Int
+  nome        String   // Ex: "Selecionar Whisky", "Sabor do Gelo"
+  descricao   String?
+  obrigatorio Boolean  @default(true)
+  multiplo    Boolean  @default(false) // true = checkbox (múltipla escolha)
+  minOpcoes   Int      @default(1)
+  maxOpcoes   Int      @default(1)
+  ordem       Int      @default(0)
+  opcoes      ComposicaoOpcao[]
+  estoque     Estoque  @relation(fields: [estoqueId], references: [id], onDelete: Cascade)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([estoqueId])
+}
+
+model ComposicaoOpcao {
+  id           Int      @id @default(autoincrement())
+  composicaoId Int
+  composicao   ComposicaoProduto @relation(fields: [composicaoId], references: [id], onDelete: Cascade)
+  nome         String   // Ex: "Jack Daniel's", "Gelo de Limão", "Red Bull"
+  valorExtra   Float    @default(0)
+  disponivel   Boolean  @default(true)
+  estoqueId    Int?     // Vinculado ao item de estoque contabilizável
+  estoque      Estoque? @relation(fields: [estoqueId], references: [id], onDelete: SetNull)
+  createdAt    DateTime @default(now())
+
+  @@index([composicaoId])
+  @@index([estoqueId])
 }
