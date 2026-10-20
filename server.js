@@ -13,13 +13,15 @@ const app = express();
 const port = 3000;
 const SECRET_KEY = process.env.SECRET_KEY || "2a51f0c6b96167b01f59b41aa2407066735cc39ee71ebd041d8ff59b75c60c15";
 const path = require("path");
+const axios = require("axios");
+const crypto = require("crypto");
 
 app.use(
   helmet({
     contentSecurityPolicy: {
       directives: {
         defaultSrc: ["'self'"],
-        connectSrc: ["'self'", "https://api-start-pira.vercel.app"],
+        connectSrc: ["'self'", "https://api-start-pira.vercel.app", "https://api-start-pira-qa.vercel.app"],
         scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
         styleSrc: ["'self'", "'unsafe-inline'"],
         imgSrc: ["'self'", "data:"],
@@ -50,7 +52,8 @@ const rotaParaModulo = (rota) => {
   if (rota.includes("/api/balance")) return "caixa";
   if (rota.includes("/api/sales")) return "pdv";
   if (rota.includes("/api/estoque")) return "pdv";
-  if (rota.includes("/api/pdv-caixa") || rota.includes("/api/pdv-origens")) return "pdv";
+  if (rota.includes("/api/pdv-caixa") || rota.includes("/api/pdv-origens") || rota.includes("/api/pdv-origem-saldo")) return "pdv";
+  if (rota.includes("/api/point")) return "pdv";
   if (rota.includes("/api/products")) return "produtos";
   if (rota.includes("/api/categories")) return "estoque";
   if (rota.includes("/api/unit-equivalences")) return "estoque";
@@ -66,8 +69,26 @@ const rotaParaModulo = (rota) => {
   if (rota.includes("/api/employees") || rota.includes("/api/daily-points") || rota.includes("/api/weekly-meta")) return "ponto";
   if (rota.includes("/api/users")) return "acessos";
   if (rota.includes("/api/register")) return "acessos";
-  if (rota.includes("/api/login")) return "autenticacao";
+  if (rota.includes("/api/login") || rota.includes("/api/logout")) return "autenticacao";
   return "outro";
+};
+
+// Identifica o dispositivo/origem da ação a partir do header customizado ou do User-Agent
+const resolveDispositivo = (clientHeader, userAgent) => {
+  // Cliente customizado enviado pelo app mobile (X-Client)
+  if (clientHeader) {
+    const c = String(clientHeader).toLowerCase();
+    if (c.includes("mobile") || c.includes("app") || c.includes("expo")) return "Aplicativo Mobile";
+  }
+  if (!userAgent) return "Desconhecido";
+  const ua = userAgent.toLowerCase();
+  if (ua.includes("expo") || ua.includes("okhttp") || ua.includes("cfnetwork") || ua.includes("start_pira") || ua.includes("startpira")) return "Aplicativo Mobile";
+  if (ua.includes("android")) return "Android (navegador)";
+  if (ua.includes("iphone") || ua.includes("ipad") || ua.includes("ios")) return "iPhone/iPad (navegador)";
+  if (ua.includes("windows")) return "Windows (navegador)";
+  if (ua.includes("macintosh") || ua.includes("mac os")) return "Mac (navegador)";
+  if (ua.includes("linux")) return "Linux (navegador)";
+  return "Outro navegador";
 };
 
 // Middleware de auditoria - registra ações no banco
@@ -130,6 +151,9 @@ const auditoriaMiddleware = async (req, res, next) => {
 
       const descricao = `${acao} ${req.path}` + (res.statusCode >= 400 ? ` [ERRO ${res.statusCode}]` : "");
 
+      const userAgent = req.headers["user-agent"] || null;
+      const dispositivo = resolveDispositivo(req.headers["x-client"], userAgent);
+
       await prisma.auditoria.create({
         data: {
           modulo,
@@ -140,6 +164,8 @@ const auditoriaMiddleware = async (req, res, next) => {
           userName,
           ip: req.ip || req.connection?.remoteAddress || null,
           payload,
+          dispositivo,
+          userAgent: userAgent ? userAgent.substring(0, 500) : null,
         },
       });
     } catch (err) {
@@ -164,7 +190,7 @@ async function sendResetEmail(email, token) {
     },
   });
 
-  const resetLink = `https://start-pira-ftd.vercel.app/reset-password?token=${token}`;
+  const resetLink = `https://start-pira-qa.vercel.app/reset-password?token=${token}`;
 
   const mailOptions = {
     from: '"Start Pira" <startpira01@gmail.com>',
@@ -193,13 +219,38 @@ Equipe Start Pira`,
 
 // ROTAS DE AUTENTICAÇÃO
 app.post("/api/register", async (req, res) => {
-  const { username, password, name } = req.body;
+  const { username, password, name, funcionario } = req.body;
   try {
     const hashedPassword = await bcrypt.hash(password, 10);
-    const newUser = await prisma.user.create({ data: { username, password: hashedPassword, name: name || null } });
+    const newUser = await prisma.user.create({
+      data: {
+        username,
+        password: hashedPassword,
+        name: name || null,
+        funcionario: funcionario ?? false,
+      },
+    });
+
+    // Se for funcionário, criar registro no Ponto (Employee) com valores padrão
+    if (funcionario) {
+      await prisma.employee.create({
+        data: {
+          name: name || username,
+          position: null,
+          carga: 0,
+          valorHora: 0,
+          metaHoras: null,
+          bonificacao: null,
+          contato: null,
+          dataEntrada: new Date(),
+          ativo: true,
+        },
+      });
+    }
+
     res.json(newUser);
   } catch (error) {
-    console.log("Dados recebidos:", req.body); // Log dos dados recebidos
+    console.log("Dados recebidos:", req.body);
     res.status(400).json({ error: "Erro ao registrar usuário", details: error.message });
   }
 });
@@ -213,6 +264,83 @@ app.get("/api/users", async (req, res) => {
   }
 });
 
+// ===== Ponto automático (login/logout) =====
+// O Ponto guarda o horário local como se fosse UTC ("YYYY-MM-DDTHH:mm:00.000Z"), então usamos o fuso de Brasilía.
+const PONTO_TZ = "America/Sao_Paulo";
+
+const dataHoraLocal = (instante) => {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: PONTO_TZ,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  })
+    .formatToParts(instante)
+    .reduce((acc, p) => ({ ...acc, [p.type]: p.value }), {});
+  return { date: `${parts.year}-${parts.month}-${parts.day}`, time: `${parts.hour}:${parts.minute}` };
+};
+
+// Funcionário ativo com ponto automático habilitado, relacionado ao usuário pelo nome (case-insensitive).
+const buscarEmployeeAutoPonto = async (user) => {
+  const nomes = [user.name, user.username].filter(Boolean).map((n) => n.trim().toLowerCase());
+  if (nomes.length === 0) return null;
+  const employees = await prisma.employee.findMany({ where: { autoPonto: true, ativo: true } });
+  return employees.find((e) => nomes.includes((e.name || "").trim().toLowerCase())) || null;
+};
+
+const pontoDoDia = (employeeId, date) =>
+  prisma.dailyPoint.findFirst({
+    where: {
+      employeeId,
+      date: {
+        gte: new Date(`${date}T00:00:00.000Z`),
+        lt: new Date(`${date}T23:59:59.999Z`),
+      },
+    },
+  });
+
+// Grava entrada (login) e/ou saída (logout) no Ponto do dia, sem sobrescrever entrada já existente nem dias com falta.
+const registrarPontoAutomatico = async (employee, { entrada, saida }) => {
+  const hoje = dataHoraLocal(new Date()).date;
+  const paraDateTime = (instante) => new Date(`${hoje}T${dataHoraLocal(instante).time}:00.000Z`);
+  const existente = await pontoDoDia(employee.id, hoje);
+
+  if (!existente) {
+    await prisma.dailyPoint.create({
+      data: {
+        date: new Date(hoje),
+        entry: entrada ? paraDateTime(entrada) : null,
+        exit: saida ? paraDateTime(saida) : null,
+        employeeId: employee.id,
+      },
+    });
+    return;
+  }
+  if (existente.falta) return;
+
+  const data = {};
+  if (entrada && !existente.entry) data.entry = paraDateTime(entrada);
+  if (saida) data.exit = paraDateTime(saida);
+  if (Object.keys(data).length > 0) {
+    await prisma.dailyPoint.update({ where: { id: existente.id }, data });
+  }
+};
+
+const usuarioEhAdmin = async (req) => {
+  try {
+    const token = req.headers.authorization?.split(" ")[1];
+    if (!token) return false;
+    const decoded = jwt.verify(token, SECRET_KEY);
+    const user = await prisma.user.findUnique({ where: { id: decoded.userId } });
+    return user?.acessos === true;
+  } catch {
+    return false;
+  }
+};
+
 app.post("/api/login", async (req, res) => {
   const { username, password } = req.body;
   const user = await prisma.user.findUnique({ where: { username } });
@@ -221,12 +349,27 @@ app.post("/api/login", async (req, res) => {
     return res.status(401).json({ error: "Usuário ou senha inválidos" });
   }
 
-  const token = jwt.sign({ userId: user.id }, SECRET_KEY, { expiresIn: "1h" });
+  // Registra o primeiro login do dia; falhas aqui nunca impedem o login.
+  try {
+    const agora = new Date();
+    const mesmoDia = user.loginAt && dataHoraLocal(user.loginAt).date === dataHoraLocal(agora).date;
+    const loginDoDia = mesmoDia ? user.loginAt : agora;
+    if (!mesmoDia) {
+      await prisma.user.update({ where: { id: user.id }, data: { loginAt: agora, logoutAt: null } });
+    }
+    const employee = await buscarEmployeeAutoPonto(user);
+    if (employee) await registrarPontoAutomatico(employee, { entrada: loginDoDia });
+  } catch (err) {
+    console.error("Erro ao registrar login/ponto automático:", err.message);
+  }
+
+  const token = jwt.sign({ userId: user.id }, SECRET_KEY, { expiresIn: "12h" });
   // Inclua as permissões do usuário no retorno
   res.json({
     token,
     username: user.username,
     name: user.name,
+    funcionario: user.funcionario,
     permissions: {
       caixa: user.caixa,
       produtos: user.produtos,
@@ -243,12 +386,44 @@ app.post("/api/login", async (req, res) => {
   });
 });
 
+// Informa se o logout do usuário precisa de confirmação (ponto automático) e o horário de saída atual.
+app.get("/api/ponto-auto/status", authenticate, async (req, res) => {
+  try {
+    const user = await prisma.user.findUnique({ where: { id: req.userId } });
+    if (!user) return res.status(404).json({ error: "Usuário não encontrado" });
+    const employee = await buscarEmployeeAutoPonto(user);
+    res.json({ autoPonto: !!employee, exitTime: dataHoraLocal(new Date()).time });
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao consultar ponto automático", details: error.message });
+  }
+});
+
+// Registra o logout do dia; com ponto automático habilitado também grava a saída no Ponto.
+app.post("/api/logout", authenticate, async (req, res) => {
+  try {
+    const user = await prisma.user.findUnique({ where: { id: req.userId } });
+    if (!user) return res.status(404).json({ error: "Usuário não encontrado" });
+
+    const agora = new Date();
+    await prisma.user.update({ where: { id: user.id }, data: { logoutAt: agora } });
+
+    const employee = await buscarEmployeeAutoPonto(user);
+    if (employee) {
+      const loginHoje = user.loginAt && dataHoraLocal(user.loginAt).date === dataHoraLocal(agora).date ? user.loginAt : null;
+      await registrarPontoAutomatico(employee, { entrada: loginHoje, saida: agora });
+    }
+    res.json({ ok: true, autoPonto: !!employee, exitTime: dataHoraLocal(agora).time });
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao registrar logout", details: error.message });
+  }
+});
+
 app.put("/api/users/:id", async (req, res) => {
   try {
     const userId = parseInt(req.params.id);
-    const { name, caixa, produtos, maquinas, fiado, despesas, ponto, acessos, base_produto, pdv, pessoal, auditoria } = req.body;
+    const { name, funcionario, caixa, produtos, maquinas, fiado, despesas, ponto, acessos, base_produto, pdv, pessoal, auditoria } = req.body;
 
-    const updateData = { caixa, produtos, maquinas, fiado, despesas, ponto, acessos, base_produto, pdv, pessoal, auditoria };
+    const updateData = { funcionario, caixa, produtos, maquinas, fiado, despesas, ponto, acessos, base_produto, pdv, pessoal, auditoria };
     if (name !== undefined) updateData.name = name;
 
     const updatedUser = await prisma.user.update({
@@ -518,17 +693,61 @@ app.delete("/api/daily-readings/:id", async (req, res) => {
 });
 
 // ROTAS DE ESTOQUE
+// Um combo não tem estoque próprio: o disponível é derivado do estoque dos componentes.
+// Opções marcadas como `base` entram em TODO combo, então cada uma limita o disponível
+// individualmente (menor estoque manda). As demais são alternativas entre si e somam a
+// quota que conseguem suprir para preencher o que sobra de `maxOpcoes`.
+const calcularDisponibilidadeCombo = (item) => {
+  const grupos = (item.composicoes || []).filter((c) => c.obrigatorio);
+  if (grupos.length === 0) return 0;
+  let disponivel = Infinity;
+  for (const grupo of grupos) {
+    const quotaPorCombo = Math.max(1, grupo.maxOpcoes || 1);
+    const opcoes = (grupo.opcoes || []).filter((o) => o.disponivel && o.estoque);
+    const bases = opcoes.filter((o) => o.base);
+    const alternativas = opcoes.filter((o) => !o.base);
+
+    let limiteGrupo = Infinity;
+    for (const o of bases) {
+      const consumo = Math.max(1, o.consomeQtd || 1);
+      limiteGrupo = Math.min(limiteGrupo, Math.floor((o.estoque.quantity || 0) / consumo));
+    }
+
+    const quotaBase = bases.reduce((s, o) => s + Math.max(1, o.consomeQtd || 1), 0);
+    const quotaRestante = Math.max(0, quotaPorCombo - quotaBase);
+    if (quotaRestante > 0) {
+      const quotaAlternativas = alternativas.reduce(
+        (soma, o) => soma + (o.estoque.quantity || 0) * Math.max(1, o.consomeQtd || 1),
+        0
+      );
+      limiteGrupo = Math.min(limiteGrupo, Math.floor(quotaAlternativas / quotaRestante));
+    }
+
+    disponivel = Math.min(disponivel, limiteGrupo === Infinity ? 0 : limiteGrupo);
+  }
+  return disponivel === Infinity ? 0 : Math.max(0, disponivel);
+};
+
+// Combos expõem o disponível calculado em `quantity` para que todas as telas
+// (PDV, estoque, carrinho) enxerguem o mesmo número sem tratamento especial.
+const comEstoqueDeCombo = (item) => {
+  if (!item?.isCombo) return item;
+  const disponivel = calcularDisponibilidadeCombo(item);
+  return { ...item, quantity: disponivel, comboDisponivel: disponivel, quantidadePropria: item.quantity };
+};
+
 app.get("/api/estoque_prod", async (req, res) => {
   try {
     const produtos = await prisma.estoque.findMany({
+      orderBy: [{ name: 'asc' }, { id: 'asc' }],
       include: {
         product: true,
         category: { include: { parent: true } },
-        composicoes: { include: { opcoes: { include: { estoque: { select: { id: true, name: true, quantity: true } } }, orderBy: { id: 'asc' } } }, orderBy: { ordem: 'asc' } },
+        composicoes: { include: { opcoes: { include: { estoque: { select: { id: true, name: true, quantity: true, productId: true, unit: true, controlaMontante: true } } }, orderBy: { id: 'asc' } } }, orderBy: { ordem: 'asc' } },
         _count: { select: { composicaoOpcoes: true } }
       }
     });
-    res.json(produtos);
+    res.json(produtos.map(comEstoqueDeCombo));
   } catch (error) {
     res.status(500).json({ error: "Erro ao buscar estoque", details: error.message });
   }
@@ -541,10 +760,10 @@ app.get("/api/estoque_prod/:id", async (req, res) => {
       include: {
         product: true,
         category: { include: { parent: true } },
-        composicoes: { include: { opcoes: { include: { estoque: { select: { id: true, name: true, quantity: true } } }, orderBy: { id: 'asc' } } }, orderBy: { ordem: 'asc' } }
+        composicoes: { include: { opcoes: { include: { estoque: { select: { id: true, name: true, quantity: true, productId: true, unit: true, controlaMontante: true } } }, orderBy: { id: 'asc' } } }, orderBy: { ordem: 'asc' } }
       }
     });
-    res.json(product || { error: "Produto não encontrado" });
+    res.json(product ? comEstoqueDeCombo(product) : { error: "Produto não encontrado" });
   } catch (error) {
     res.status(500).json({ error: "Erro ao buscar produto", details: error.message });
   }
@@ -553,7 +772,7 @@ app.get("/api/estoque_prod/:id", async (req, res) => {
 // Entrada de estoque - seleciona do catálogo, verifica se já existe, incrementa ou cria
 app.post("/api/estoque_prod/entrada", async (req, res) => {
   try {
-    const { productId, quantity, unit } = req.body;
+    const { productId, quantity, unit, value, valuecusto } = req.body;
 
     if (!productId || !quantity || !unit) {
       return res.status(400).json({ error: "productId, quantity e unit são obrigatórios." });
@@ -573,6 +792,19 @@ app.post("/api/estoque_prod/entrada", async (req, res) => {
       return res.status(404).json({ error: "Produto não encontrado no catálogo." });
     }
 
+    // Resolver valor de venda/custo desta unidade: body (editável) > unitPrices[unit] (cadastro) > produto
+    const unitPriceCfg = catalogProduct.unitPrices && typeof catalogProduct.unitPrices === "object"
+      ? catalogProduct.unitPrices[unit]
+      : null;
+    const bodyValue = value !== undefined && value !== null && value !== "" ? parseFloat(value) : null;
+    const bodyCusto = valuecusto !== undefined && valuecusto !== null && valuecusto !== "" ? parseFloat(valuecusto) : null;
+    const entradaValue = (bodyValue != null && !isNaN(bodyValue))
+      ? bodyValue
+      : (unitPriceCfg && unitPriceCfg.value != null ? Number(unitPriceCfg.value) : catalogProduct.value);
+    const entradaCusto = (bodyCusto != null && !isNaN(bodyCusto))
+      ? bodyCusto
+      : (unitPriceCfg && unitPriceCfg.cost != null ? Number(unitPriceCfg.cost) : catalogProduct.valuecusto);
+
     // Verificar se já existe no estoque com mesmo productId e mesma unidade
     const existingStock = await prisma.estoque.findFirst({
       where: { productId: parseInt(productId), unit: unit }
@@ -580,6 +812,51 @@ app.post("/api/estoque_prod/entrada", async (req, res) => {
 
     const result = await prisma.$transaction(async (tx) => {
       let estoqueItem;
+
+      // Produto controlado por montante: a entrada soma ML (garrafa = volume) e recalcula as unidades.
+      const irmaControlada = await tx.estoque.findFirst({
+        where: { productId: parseInt(productId), controlaMontante: true, isCombo: false }
+      });
+      if (irmaControlada) {
+        let linha = existingStock;
+        if (!linha) {
+          linha = await tx.estoque.create({
+            data: {
+              productId: parseInt(productId),
+              name: catalogProduct.name,
+              quantity: 0,
+              unit: unit,
+              value: entradaValue,
+              valuecusto: entradaCusto,
+              categoria_Id: catalogProduct.categoryId || null,
+              controlaMontante: true,
+              montanteMl: irmaControlada.montanteMl
+            }
+          });
+        } else if (!linha.controlaMontante) {
+          linha = await tx.estoque.update({
+            where: { id: linha.id },
+            data: { controlaMontante: true, montanteMl: irmaControlada.montanteMl }
+          });
+        }
+        const mov = await movimentarMontante(tx, linha, parsedQuantity);
+        await tx.estoque.update({ where: { id: linha.id }, data: { value: entradaValue, valuecusto: entradaCusto } });
+        await tx.stockMovement.create({
+          data: {
+            estoqueId: linha.id,
+            type: 'ENTRY',
+            quantity: parsedQuantity,
+            previousStock: mov.previousStock,
+            newStock: mov.newStock,
+            description: `Entrada de ${parsedQuantity}x ${unit} - ${catalogProduct.name} (montante ${mov.montanteMl}ML)`,
+            referenceType: 'Manual'
+          }
+        });
+        return tx.estoque.findUnique({
+          where: { id: linha.id },
+          include: { product: true, category: { include: { parent: true } } }
+        });
+      }
 
       if (existingStock) {
         // Incrementar quantidade no registro existente
@@ -590,8 +867,8 @@ app.post("/api/estoque_prod/entrada", async (req, res) => {
           where: { id: existingStock.id },
           data: { 
             quantity: newStock,
-            value: catalogProduct.value,
-            valuecusto: catalogProduct.valuecusto
+            value: entradaValue,
+            valuecusto: entradaCusto
           },
           include: { product: true, category: { include: { parent: true } } }
         });
@@ -616,8 +893,8 @@ app.post("/api/estoque_prod/entrada", async (req, res) => {
             name: catalogProduct.name,
             quantity: parsedQuantity,
             unit: unit,
-            value: catalogProduct.value,
-            valuecusto: catalogProduct.valuecusto,
+            value: entradaValue,
+            valuecusto: entradaCusto,
             categoria_Id: catalogProduct.categoryId || null
           },
           include: { product: true, category: { include: { parent: true } } }
@@ -640,12 +917,559 @@ app.post("/api/estoque_prod/entrada", async (req, res) => {
       return estoqueItem;
     });
 
+    // Após a transação: checar EstoqueMinimo e gerenciar ListaCompras
+    try {
+      const minimo = await prisma.estoqueMinimo.findUnique({ where: { estoqueId: result.id } });
+      if (minimo) {
+        if (result.quantity > minimo.quantidadeMinima) {
+          // Estoque voltou acima do mínimo → concluir entradas pendentes
+          await prisma.listaCompras.updateMany({
+            where: { estoqueId: result.id, status: "PENDENTE" },
+            data: { status: "CONCLUIDO", concluidoEm: new Date() }
+          });
+        } else {
+          // Ainda abaixo do mínimo → garantir que existe um registro PENDENTE
+          const pendente = await prisma.listaCompras.findFirst({
+            where: { estoqueId: result.id, status: "PENDENTE" }
+          });
+          if (!pendente) {
+            await prisma.listaCompras.create({
+              data: {
+                estoqueId: result.id,
+                nomeProduto: result.name,
+                quantidadeAtual: result.quantity,
+                quantidadeMinima: minimo.quantidadeMinima,
+                status: "PENDENTE"
+              }
+            });
+          } else {
+            await prisma.listaCompras.update({
+              where: { id: pendente.id },
+              data: { quantidadeAtual: result.quantity }
+            });
+          }
+        }
+      }
+    } catch (e) {
+      console.error("Erro ao checar lista de compras após entrada:", e);
+    }
+
     res.status(201).json(result);
   } catch (error) {
     console.error("Erro na entrada de estoque:", error);
     res.status(500).json({ error: "Erro ao registrar entrada no estoque", details: error.message });
   }
 });
+
+// ============================================================
+// ESTOQUE MÍNIMO
+// ============================================================
+
+// Listar todos os mínimos
+app.get("/api/estoque-minimo", async (req, res) => {
+  try {
+    const minimos = await prisma.estoqueMinimo.findMany({
+      include: { estoque: { select: { id: true, name: true, unit: true, quantity: true } } }
+    });
+    res.json(minimos);
+  } catch (e) {
+    res.status(500).json({ error: "Erro ao buscar mínimos", details: e.message });
+  }
+});
+
+// Criar ou atualizar mínimo de um item de estoque
+app.post("/api/estoque-minimo", async (req, res) => {
+  try {
+    const { estoqueId, quantidadeMinima } = req.body;
+    if (!estoqueId || quantidadeMinima == null) return res.status(400).json({ error: "estoqueId e quantidadeMinima são obrigatórios." });
+    const minimo = await prisma.estoqueMinimo.upsert({
+      where: { estoqueId: parseInt(estoqueId) },
+      create: { estoqueId: parseInt(estoqueId), quantidadeMinima: parseFloat(quantidadeMinima) },
+      update: { quantidadeMinima: parseFloat(quantidadeMinima) },
+      include: { estoque: { select: { id: true, name: true, unit: true, quantity: true } } }
+    });
+    // Checar imediatamente se já está abaixo do mínimo
+    if (minimo.estoque.quantity <= parseFloat(quantidadeMinima)) {
+      const pendente = await prisma.listaCompras.findFirst({ where: { estoqueId: parseInt(estoqueId), status: "PENDENTE" } });
+      if (!pendente) {
+        await prisma.listaCompras.create({
+          data: {
+            estoqueId: parseInt(estoqueId),
+            nomeProduto: minimo.estoque.name,
+            quantidadeAtual: minimo.estoque.quantity,
+            quantidadeMinima: parseFloat(quantidadeMinima),
+            status: "PENDENTE"
+          }
+        });
+      }
+    }
+    res.json(minimo);
+  } catch (e) {
+    res.status(500).json({ error: "Erro ao salvar mínimo", details: e.message });
+  }
+});
+
+// Remover mínimo
+app.delete("/api/estoque-minimo/:estoqueId", async (req, res) => {
+  try {
+    const estoqueId = parseInt(req.params.estoqueId);
+    await prisma.estoqueMinimo.deleteMany({ where: { estoqueId } });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: "Erro ao remover mínimo", details: e.message });
+  }
+});
+
+// ============================================================
+// LISTA DE COMPRAS
+// ============================================================
+
+// Listar (com filtro de status opcional)
+app.get("/api/lista-compras", async (req, res) => {
+  try {
+    const { status } = req.query;
+    const where = status ? { status } : {};
+    const lista = await prisma.listaCompras.findMany({
+      where,
+      include: { estoque: { select: { id: true, name: true, unit: true, quantity: true, category: { include: { parent: true } } } } },
+      orderBy: { createdAt: "desc" }
+    });
+    res.json(lista);
+  } catch (e) {
+    res.status(500).json({ error: "Erro ao buscar lista de compras", details: e.message });
+  }
+});
+
+// Concluir manualmente um item
+app.put("/api/lista-compras/:id/concluir", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const item = await prisma.listaCompras.update({
+      where: { id },
+      data: { status: "CONCLUIDO", concluidoEm: new Date() }
+    });
+    res.json(item);
+  } catch (e) {
+    res.status(500).json({ error: "Erro ao concluir item", details: e.message });
+  }
+});
+
+// Reabrir um item concluído
+app.put("/api/lista-compras/:id/reabrir", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const item = await prisma.listaCompras.update({
+      where: { id },
+      data: { status: "PENDENTE", concluidoEm: null }
+    });
+    res.json(item);
+  } catch (e) {
+    res.status(500).json({ error: "Erro ao reabrir item", details: e.message });
+  }
+});
+
+// ============================================================
+// HELPERS: ListaCompras e FollowUp
+// ============================================================
+
+// Retorna a semana ISO no formato "YYYY-Www"
+function getISOWeekString(date = new Date()) {
+  const d = new Date(date);
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() + 3 - ((d.getDay() + 6) % 7));
+  const week1 = new Date(d.getFullYear(), 0, 4);
+  const weekNum = 1 + Math.round(((d - week1) / 86400000 - 3 + ((week1.getDay() + 6) % 7)) / 7);
+  return `${d.getFullYear()}-W${String(weekNum).padStart(2, "0")}`;
+}
+
+// Verifica se existe uma unidade de medida MAIOR (irmã) do mesmo produto com estoque
+// disponível para conversão automática. Nesse caso o item NÃO está realmente em falta,
+// pois a próxima venda converte a unidade maior sob demanda.
+async function temUnidadeMaiorConvertivel(estoqueItem) {
+  try {
+    if (!estoqueItem?.productId) return false;
+    if (estoqueItem.controlaMontante) return false; // montante já cobre todas as unidades
+    const siblings = await prisma.estoque.findMany({
+      where: { productId: estoqueItem.productId, id: { not: estoqueItem.id }, quantity: { gt: 0 } },
+      orderBy: { id: 'asc' }
+    });
+    if (siblings.length === 0) return false;
+    const eqs = await prisma.unitEquivalence.findMany();
+    const eqMap = {};
+    eqs.forEach(e => { eqMap[e.unitName] = e; });
+    return irmaosConversiveis(estoqueItem, siblings, eqMap).some((c) => c.sibling.quantity >= 1);
+  } catch {
+    return false;
+  }
+}
+
+// Verifica se o estoque atingiu o mínimo e cria/atualiza a ListaCompras
+async function criarListaComprasSeNecessario(estoqueId, novaQuantidade) {
+  try {
+    const minimo = await prisma.estoqueMinimo.findUnique({ where: { estoqueId } });
+    if (!minimo) return;
+    const estoque = await prisma.estoque.findUnique({ where: { id: estoqueId }, select: { id: true, name: true, productId: true, unit: true, controlaMontante: true } });
+    if (!estoque) return;
+    if (novaQuantidade <= minimo.quantidadeMinima) {
+      // Só é "falta" real se NÃO houver unidade de medida maior do mesmo produto para converter.
+      // Se houver, o produto continua disponível (conversão automática na venda) → não registrar falta.
+      const podeConverter = await temUnidadeMaiorConvertivel(estoque);
+      if (podeConverter) {
+        const pendente = await prisma.listaCompras.findFirst({ where: { estoqueId, status: "PENDENTE" } });
+        if (pendente) {
+          await prisma.listaCompras.update({ where: { id: pendente.id }, data: { status: "CONCLUIDO", concluidoEm: new Date() } });
+        }
+        return;
+      }
+      const pendente = await prisma.listaCompras.findFirst({ where: { estoqueId, status: "PENDENTE" } });
+      if (pendente) {
+        await prisma.listaCompras.update({ where: { id: pendente.id }, data: { quantidadeAtual: novaQuantidade } });
+      } else {
+        await prisma.listaCompras.create({
+          data: { estoqueId, nomeProduto: estoque.name, quantidadeAtual: novaQuantidade, quantidadeMinima: minimo.quantidadeMinima, status: "PENDENTE" }
+        });
+      }
+    } else {
+      const pendente = await prisma.listaCompras.findFirst({ where: { estoqueId, status: "PENDENTE" } });
+      if (pendente) {
+        await prisma.listaCompras.update({ where: { id: pendente.id }, data: { status: "CONCLUIDO", concluidoEm: new Date() } });
+      }
+    }
+  } catch (err) {
+    console.error("Erro ao verificar lista de compras:", err.message);
+  }
+}
+
+// ============================================================
+// FOLLOW-UP
+// ============================================================
+
+// Gerar follow-ups da semana atual para todos os itens com contabiliza=false
+app.post("/api/followup/gerar-semana", async (req, res) => {
+  try {
+    const semana = getISOWeekString();
+    const itens = await prisma.estoque.findMany({ where: { contabiliza: false }, select: { id: true } });
+    const criados = [];
+    for (const item of itens) {
+      try {
+        const fu = await prisma.followUp.upsert({
+          where: { estoqueId_semana: { estoqueId: item.id, semana } },
+          update: {},
+          create: { estoqueId: item.id, semana },
+        });
+        criados.push(fu);
+      } catch (_) {}
+    }
+    res.json({ semana, total: criados.length });
+  } catch (e) {
+    res.status(500).json({ error: "Erro ao gerar follow-ups", details: e.message });
+  }
+});
+
+// Buscar follow-ups pendentes da semana atual
+app.get("/api/followup/pendentes", async (req, res) => {
+  try {
+    const semana = getISOWeekString();
+    const pendentes = await prisma.followUp.findMany({
+      where: { semana, temEstoque: null },
+      include: { estoque: { select: { id: true, name: true, unit: true, quantity: true } } },
+      orderBy: { createdAt: "asc" }
+    });
+    res.json(pendentes);
+  } catch (e) {
+    res.status(500).json({ error: "Erro ao buscar pendentes", details: e.message });
+  }
+});
+
+// Responder um follow-up
+app.put("/api/followup/:id", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const { temEstoque, quantidade, observacao, respondidoPor } = req.body;
+    const fu = await prisma.followUp.update({
+      where: { id },
+      data: {
+        temEstoque: typeof temEstoque === "boolean" ? temEstoque : null,
+        quantidade: quantidade != null ? parseFloat(quantidade) : null,
+        observacao: observacao || null,
+        respondidoEm: new Date(),
+        respondidoPor: respondidoPor || null,
+      },
+      include: { estoque: { select: { id: true, name: true, unit: true, quantity: true } } }
+    });
+
+         // Se SIM: atualizar estoque com a quantidade informada e checar mínimo
+    if (temEstoque === true && quantidade != null) {
+      const novaQtd = parseFloat(quantidade);
+      await prisma.estoque.update({ where: { id: fu.estoqueId }, data: { quantity: novaQtd } });
+      await criarListaComprasSeNecessario(fu.estoqueId, novaQtd);
+    }
+
+    // Se NÃO: zerar estoque e sempre garantir entrada na lista de compras (incondicional)
+    if (temEstoque === false) {
+      await prisma.estoque.update({ where: { id: fu.estoqueId }, data: { quantity: 0 } });
+      const estoqueInfo = await prisma.estoque.findUnique({ where: { id: fu.estoqueId }, select: { name: true } });
+      const minimoInfo = await prisma.estoqueMinimo.findUnique({ where: { estoqueId: fu.estoqueId } });
+      const pendente = await prisma.listaCompras.findFirst({ where: { estoqueId: fu.estoqueId, status: "PENDENTE" } });
+      if (pendente) {
+        await prisma.listaCompras.update({ where: { id: pendente.id }, data: { quantidadeAtual: 0 } });
+      } else if (estoqueInfo) {
+        await prisma.listaCompras.create({
+          data: {
+            estoqueId: fu.estoqueId,
+            nomeProduto: estoqueInfo.name,
+            quantidadeAtual: 0,
+            quantidadeMinima: minimoInfo?.quantidadeMinima || 0,
+            status: "PENDENTE",
+          },
+        });
+      }
+    }
+
+
+    res.json(fu);
+  } catch (e) {
+    res.status(500).json({ error: "Erro ao responder follow-up", details: e.message });
+  }
+});
+
+// Histórico de follow-ups de um item
+app.get("/api/followup/historico/:estoqueId", async (req, res) => {
+  try {
+    const estoqueId = parseInt(req.params.estoqueId);
+    const historico = await prisma.followUp.findMany({
+      where: { estoqueId },
+      orderBy: { semana: "desc" },
+      take: 52
+    });
+    res.json(historico);
+  } catch (e) {
+    res.status(500).json({ error: "Erro ao buscar histórico", details: e.message });
+  }
+});
+
+// Monta um mapa { unitName -> objeto de equivalência } a partir da tabela global.
+async function buildEqMap(client) {
+  const all = await client.unitEquivalence.findMany();
+  const map = {};
+  all.forEach((e) => { map[e.unitName] = e; });
+  return map;
+}
+
+// Retorna quantas "unidades base globais" uma unidade representa (não cadastradas = 1).
+function unitValue(eqMap, unit) {
+  return eqMap[unit]?.value ?? 1;
+}
+
+// Lista as unidades irmãs aptas a abastecer `estoqueItem` por conversão automática,
+// ordenadas da melhor origem para a pior. Regras:
+// - nunca converter a partir de outra unidade fracional (Dose → Dose);
+// - quando o destino é fracional, só a unidade-pai de menor valor (ex.: Garrafa) é usada,
+//   evitando consumir embalagens maiores (Fardo) e perder saldo;
+// - a ordenação é determinística para que a baixa não varie entre vendas.
+function irmaosConversiveis(estoqueItem, siblings, eqMap) {
+  const currentEq = eqMap[estoqueItem.unit];
+  const candidatos = [];
+  for (const sib of siblings) {
+    const sibEq = eqMap[sib.unit];
+    if (sibEq?.isFractional) continue;
+    // Combo é só uma variação de venda (sem estoque físico próprio): nunca serve de origem.
+    if (sib.isCombo) continue;
+    let ratio = null;
+    if (currentEq?.isFractional && currentEq?.fractionalValue > 0) {
+      ratio = currentEq.fractionalValue;
+    } else {
+      const currentVal = currentEq?.value || 1;
+      const sibVal = sibEq?.value || 1;
+      if (sibVal > currentVal) ratio = sibVal / currentVal;
+    }
+    if (!ratio || ratio <= 0) continue;
+    candidatos.push({ sibling: sib, ratio, peso: sibEq?.value ?? 1 });
+  }
+  candidatos.sort((a, b) => a.peso - b.peso || a.sibling.id - b.sibling.id);
+  if (currentEq?.isFractional && candidatos.length > 0) {
+    const menorPeso = candidatos[0].peso;
+    return candidatos.filter((c) => c.peso === menorPeso);
+  }
+  return candidatos;
+}
+
+// Resolve a unidade base (unitária = 1) de um produto.
+// Usa product.baseUnit quando definido; caso contrário deduz a menor unidade
+// cadastrada no estoque do produto (menor "value" nas equivalências globais).
+async function resolveProductBaseUnit(client, productId, eqMap, explicitBaseUnit) {
+  if (explicitBaseUnit) return explicitBaseUnit;
+  const rows = await client.estoque.findMany({ where: { productId }, select: { unit: true } });
+  let best = null;
+  let bestVal = Infinity;
+  for (const r of rows) {
+    const eq = eqMap[r.unit];
+    if (eq?.isFractional) continue; // unidades fracionais (Dose/Taça) não servem de base
+    const val = eq?.value ?? 1; // unidades não cadastradas valem 1 (ex.: "Unidade", "Lata")
+    if (val < bestVal) { bestVal = val; best = r.unit; }
+  }
+  return best || "Unidade";
+}
+
+// ===== Estoque por montante (ML) — opt-in por produto (Estoque.controlaMontante) =====
+// Para produtos vendidos inteiros e em doses (ex.: aguardente), o saldo real é um único
+// montante em ML. Garrafa e doses são derivadas dele (piso do montante / ML da unidade) e
+// gravadas em `quantity`, então o restante do sistema segue lendo `quantity` normalmente.
+// Produtos sem a flag não passam por nenhuma destas funções.
+
+function parseMl(texto) {
+  const m = /(\d+(?:[.,]\d+)?)\s*ml\b/i.exec(String(texto ?? ""));
+  return m ? parseFloat(m[1].replace(",", ".")) : null;
+}
+
+// ML que uma linha de estoque representa: unidade ("Dose 80ML") ou, na garrafa, o volume do título.
+function mlDaLinha(linha, nomeProduto) {
+  return parseMl(linha?.unit) ?? parseMl(linha?.name) ?? parseMl(nomeProduto);
+}
+
+function quantidadeDoMontante(montanteMl, ml) {
+  return Math.floor(montanteMl / ml + 1e-9);
+}
+
+// Linhas do produto elegíveis ao controle (variações de venda/combos ficam de fora).
+function linhasDoProduto(client, productId, apenasControladas) {
+  return client.estoque.findMany({
+    where: { productId, isCombo: false, ...(apenasControladas ? { controlaMontante: true } : {}) },
+    include: { product: { select: { name: true } } },
+    orderBy: { id: "asc" },
+  });
+}
+
+// Grava o montante e recalcula `quantity` de todas as linhas controladas do produto.
+async function sincronizarMontante(tx, productId, montanteMl) {
+  const linhas = await linhasDoProduto(tx, productId, true);
+  for (const l of linhas) {
+    const ml = mlDaLinha(l, l.product?.name);
+    if (!ml) continue;
+    await tx.estoque.update({
+      where: { id: l.id },
+      data: { montanteMl, quantity: quantidadeDoMontante(montanteMl, ml) },
+    });
+  }
+}
+
+// Aplica uma variação em unidades da linha ao montante (positivo = entrada, negativo = baixa).
+async function movimentarMontante(tx, estoqueItem, deltaUnidades, rotuloErro) {
+  const linhas = await linhasDoProduto(tx, estoqueItem.productId, true);
+  const linha = linhas.find((l) => l.id === estoqueItem.id);
+  const ml = linha ? mlDaLinha(linha, linha.product?.name) : null;
+  if (!ml) {
+    throw new Error(`Não foi possível identificar o volume (ML) de "${estoqueItem.name}" (${estoqueItem.unit}).`);
+  }
+  const deltaMl = deltaUnidades * ml;
+  const alvo = { productId: estoqueItem.productId, controlaMontante: true, isCombo: false };
+
+  if (deltaMl < 0) {
+    const r = await tx.estoque.updateMany({
+      where: { ...alvo, montanteMl: { gte: -deltaMl - 1e-6 } },
+      data: { montanteMl: { increment: deltaMl } },
+    });
+    if (r.count === 0) {
+      throw new Error(`Estoque insuficiente para ${rotuloErro || `"${estoqueItem.name}"`} (${estoqueItem.unit}). Disponível: ${linha.quantity}, Necessário: ${-deltaUnidades}.`);
+    }
+  } else if (deltaMl > 0) {
+    await tx.estoque.updateMany({ where: alvo, data: { montanteMl: { increment: deltaMl } } });
+  }
+
+  const atual = await tx.estoque.findUnique({ where: { id: estoqueItem.id }, select: { montanteMl: true } });
+  await sincronizarMontante(tx, estoqueItem.productId, atual.montanteMl);
+  const depois = await tx.estoque.findUnique({ where: { id: estoqueItem.id }, select: { quantity: true } });
+  return { previousStock: linha.quantity, newStock: depois.quantity, montanteMl: atual.montanteMl };
+}
+
+// Montante atual somando o que já existe em cada linha (garrafas x volume + doses x ML).
+function calcularMontanteInicial(linhas) {
+  let total = 0;
+  const detalhes = linhas.map((l) => {
+    const ml = mlDaLinha(l, l.product?.name);
+    const subtotalMl = ml ? (l.quantity || 0) * ml : null;
+    if (subtotalMl != null) total += subtotalMl;
+    return { id: l.id, unit: l.unit, name: l.name, quantity: l.quantity, ml, subtotalMl, ativo: l.controlaMontante };
+  });
+  return { total, detalhes };
+}
+
+// Prévia: como ficam as quantidades se o controle por montante for ativado agora.
+app.get("/api/estoque_prod/montante/preview/:productId", async (req, res) => {
+  try {
+    const productId = parseInt(req.params.productId, 10);
+    if (isNaN(productId)) return res.status(400).json({ error: "productId inválido" });
+    const linhas = await linhasDoProduto(prisma, productId, false);
+    if (linhas.length === 0) return res.status(404).json({ error: "Produto sem itens no estoque." });
+    const ativo = linhas.some((l) => l.controlaMontante);
+    const controladas = linhas.filter((l) => l.controlaMontante);
+    const base = ativo ? controladas : linhas;
+    const { total, detalhes } = calcularMontanteInicial(base);
+    const montanteMl = ativo ? Math.max(...controladas.map((l) => l.montanteMl || 0)) : total;
+    const semMl = detalhes.filter((d) => !d.ml);
+    const resultado = detalhes
+      .filter((d) => d.ml)
+      .map((d) => ({ id: d.id, unit: d.unit, ml: d.ml, quantidadeAtual: d.quantity, quantidadeNova: quantidadeDoMontante(montanteMl, d.ml) }));
+    res.json({ productId, nome: linhas[0].product?.name || linhas[0].name, ativo, montanteMl, detalhes, resultado, semMl });
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao gerar prévia do montante", details: error.message });
+  }
+});
+
+// Ativa o controle por montante: converte o saldo atual em ML e recalcula as quantidades.
+app.post("/api/estoque_prod/montante/ativar", async (req, res) => {
+  try {
+    const productId = parseInt(req.body.productId, 10);
+    if (isNaN(productId)) return res.status(400).json({ error: "productId inválido" });
+    const result = await prisma.$transaction(async (tx) => {
+      const linhas = await linhasDoProduto(tx, productId, false);
+      if (linhas.length === 0) throw new Error("Produto sem itens no estoque.");
+      if (linhas.some((l) => l.controlaMontante)) throw new Error("Este produto já usa controle por montante.");
+      const { total, detalhes } = calcularMontanteInicial(linhas);
+      const semMl = detalhes.filter((d) => !d.ml);
+      if (semMl.length > 0) {
+        throw new Error(`Não foi possível identificar o ML de: ${semMl.map((d) => d.unit).join(", ")}. Inclua o volume (ex.: 80ML) na unidade ou no nome.`);
+      }
+      const antes = new Map(linhas.map((l) => [l.id, l.quantity]));
+      await tx.estoque.updateMany({ where: { productId, isCombo: false }, data: { controlaMontante: true, montanteMl: total } });
+      await sincronizarMontante(tx, productId, total);
+      const depois = await linhasDoProduto(tx, productId, true);
+      for (const l of depois) {
+        if (l.quantity === antes.get(l.id)) continue;
+        await tx.stockMovement.create({
+          data: {
+            estoqueId: l.id,
+            type: "ADJUSTMENT",
+            quantity: l.quantity - antes.get(l.id),
+            previousStock: antes.get(l.id),
+            newStock: l.quantity,
+            description: `Controle por montante ativado (${total}ML)`,
+            referenceType: "Manual",
+          },
+        });
+      }
+      return { montanteMl: total, linhas: depois.map((l) => ({ id: l.id, unit: l.unit, quantity: l.quantity })) };
+    });
+    res.json(result);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// Desativa: mantém as quantidades já calculadas e volta à lógica padrão de conversão.
+app.post("/api/estoque_prod/montante/desativar", async (req, res) => {
+  try {
+    const productId = parseInt(req.body.productId, 10);
+    if (isNaN(productId)) return res.status(400).json({ error: "productId inválido" });
+    await prisma.estoque.updateMany({ where: { productId, controlaMontante: true }, data: { controlaMontante: false, montanteMl: 0 } });
+    res.json({ message: "Controle por montante desativado." });
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao desativar controle por montante", details: error.message });
+  }
+});
+
+// Conversões manuais não se aplicam a itens controlados por montante.
+const MSG_MONTANTE_SEM_CONVERSAO = "Este produto é controlado por montante (ML): não há conversão entre unidades.";
 
 // Conversão de unidades - ex: 1 Fardo (12un) → 12 Unidades
 app.post("/api/estoque_prod/converter", async (req, res) => {
@@ -669,9 +1493,16 @@ app.post("/api/estoque_prod/converter", async (req, res) => {
     if (!estoqueItem) {
       return res.status(404).json({ error: "Item não encontrado no estoque." });
     }
+    if (estoqueItem.controlaMontante) {
+      return res.status(400).json({ error: MSG_MONTANTE_SEM_CONVERSAO });
+    }
 
-    if (estoqueItem.unit === "Unidade") {
-      return res.status(400).json({ error: "Este item já está em Unidades, não é possível converter." });
+    // Determinar a unidade base (unitária) do produto
+    const eqMap = await buildEqMap(prisma);
+    const baseUnit = await resolveProductBaseUnit(prisma, estoqueItem.productId, eqMap, estoqueItem.product?.baseUnit);
+
+    if (estoqueItem.unit === baseUnit) {
+      return res.status(400).json({ error: `Este item já está na unidade base ("${baseUnit}"), não é possível converter.` });
     }
 
     if (estoqueItem.quantity < parsedQty) {
@@ -680,19 +1511,17 @@ app.post("/api/estoque_prod/converter", async (req, res) => {
       });
     }
 
-    // Buscar fator de conversão
-    const equivalence = await prisma.unitEquivalence.findUnique({
-      where: { unitName: estoqueItem.unit }
-    });
-    if (!equivalence) {
+    // Fator de conversão relativo à unidade base (ex.: Fardo(12) → Lata(1) = 12)
+    const factor = unitValue(eqMap, estoqueItem.unit) / unitValue(eqMap, baseUnit);
+    if (!(factor > 1)) {
       return res.status(400).json({ 
-        error: `Equivalência não definida para "${estoqueItem.unit}". Cadastre a equivalência primeiro.` 
+        error: `Não é possível converter "${estoqueItem.unit}" para a unidade base "${baseUnit}". Verifique as equivalências cadastradas.` 
       });
     }
 
-    const unitsGenerated = parsedQty * equivalence.value;
-    const unitValueSell = estoqueItem.value / equivalence.value;
-    const unitValueCost = estoqueItem.valuecusto / equivalence.value;
+    const unitsGenerated = parsedQty * factor;
+    const unitValueSell = estoqueItem.value / factor;
+    const unitValueCost = estoqueItem.valuecusto / factor;
 
     const result = await prisma.$transaction(async (tx) => {
       // 1. Diminuir quantidade do item original
@@ -712,14 +1541,14 @@ app.post("/api/estoque_prod/converter", async (req, res) => {
           quantity: -parsedQty,
           previousStock: previousStock,
           newStock: newStock,
-          description: `Conversão: ${parsedQty}x ${estoqueItem.unit} → ${unitsGenerated}x Unidade`,
+          description: `Conversão: ${parsedQty}x ${estoqueItem.unit} → ${unitsGenerated}x ${baseUnit}`,
           referenceType: 'Conversion'
         }
       });
 
-      // 2. Verificar se já existe registro em Unidade para este produto
+      // 2. Verificar se já existe registro na unidade base para este produto
       const existingUnitStock = await tx.estoque.findFirst({
-        where: { productId: estoqueItem.productId, unit: "Unidade" }
+        where: { productId: estoqueItem.productId, unit: baseUnit }
       });
 
       let unitEstoqueItem;
@@ -739,7 +1568,7 @@ app.post("/api/estoque_prod/converter", async (req, res) => {
             quantity: unitsGenerated,
             previousStock: prevUnitStock,
             newStock: newUnitStock,
-            description: `Conversão: ${parsedQty}x ${estoqueItem.unit} → ${unitsGenerated}x Unidade`,
+            description: `Conversão: ${parsedQty}x ${estoqueItem.unit} → ${unitsGenerated}x ${baseUnit}`,
             referenceType: 'Conversion'
           }
         });
@@ -749,7 +1578,7 @@ app.post("/api/estoque_prod/converter", async (req, res) => {
             productId: estoqueItem.productId,
             name: estoqueItem.name,
             quantity: unitsGenerated,
-            unit: "Unidade",
+            unit: baseUnit,
             value: Math.round(unitValueSell * 100) / 100,
             valuecusto: Math.round(unitValueCost * 100) / 100,
             categoria_Id: estoqueItem.categoria_Id
@@ -763,7 +1592,7 @@ app.post("/api/estoque_prod/converter", async (req, res) => {
             quantity: unitsGenerated,
             previousStock: 0,
             newStock: unitsGenerated,
-            description: `Conversão: ${parsedQty}x ${estoqueItem.unit} → ${unitsGenerated}x Unidade (novo registro)`,
+            description: `Conversão: ${parsedQty}x ${estoqueItem.unit} → ${unitsGenerated}x ${baseUnit} (novo registro)`,
             referenceType: 'Conversion'
           }
         });
@@ -771,8 +1600,8 @@ app.post("/api/estoque_prod/converter", async (req, res) => {
 
       return {
         origin: { id: estoqueItem.id, name: estoqueItem.name, unit: estoqueItem.unit, removed: parsedQty, remaining: newStock },
-        destination: { id: unitEstoqueItem.id, name: estoqueItem.name, unit: "Unidade", added: unitsGenerated, total: unitEstoqueItem.quantity },
-        conversionFactor: equivalence.value
+        destination: { id: unitEstoqueItem.id, name: estoqueItem.name, unit: baseUnit, added: unitsGenerated, total: unitEstoqueItem.quantity },
+        conversionFactor: factor
       };
     });
 
@@ -805,31 +1634,36 @@ app.post("/api/estoque_prod/converter-reverso", async (req, res) => {
     if (!estoqueItem) {
       return res.status(404).json({ error: "Item não encontrado no estoque." });
     }
-
-    if (estoqueItem.unit !== "Unidade") {
-      return res.status(400).json({ error: "Este item não está em Unidades. Use a conversão normal." });
+    if (estoqueItem.controlaMontante) {
+      return res.status(400).json({ error: MSG_MONTANTE_SEM_CONVERSAO });
     }
 
-    // Buscar fator de conversão da unidade de destino
-    const equivalence = await prisma.unitEquivalence.findUnique({
-      where: { unitName: targetUnit }
-    });
-    if (!equivalence) {
+    // Determinar a unidade base (unitária) do produto
+    const eqMap = await buildEqMap(prisma);
+    const baseUnit = await resolveProductBaseUnit(prisma, estoqueItem.productId, eqMap, estoqueItem.product?.baseUnit);
+
+    if (estoqueItem.unit !== baseUnit) {
+      return res.status(400).json({ error: `Este item não está na unidade base ("${baseUnit}"). Use a conversão normal.` });
+    }
+
+    // Fator de conversão da unidade de destino relativo à base (ex.: Fardo(12) sobre Lata(1) = 12)
+    const factor = unitValue(eqMap, targetUnit) / unitValue(eqMap, baseUnit);
+    if (!(factor > 1)) {
       return res.status(400).json({
-        error: `Equivalência não definida para "${targetUnit}". Cadastre a equivalência primeiro.`
+        error: `Não é possível empacotar "${baseUnit}" em "${targetUnit}". Verifique as equivalências cadastradas.`
       });
     }
 
-    const unitsNeeded = parsedQty * equivalence.value;
+    const unitsNeeded = parsedQty * factor;
 
     if (estoqueItem.quantity < unitsNeeded) {
       return res.status(400).json({
-        error: `Unidades insuficientes. Necessário: ${unitsNeeded} un. Disponível: ${estoqueItem.quantity} un.`
+        error: `Unidades insuficientes. Necessário: ${unitsNeeded} ${baseUnit}. Disponível: ${estoqueItem.quantity} ${baseUnit}.`
       });
     }
 
-    const packedValueSell = estoqueItem.value * equivalence.value;
-    const packedValueCost = estoqueItem.valuecusto * equivalence.value;
+    const packedValueSell = estoqueItem.value * factor;
+    const packedValueCost = estoqueItem.valuecusto * factor;
 
     const result = await prisma.$transaction(async (tx) => {
       // 1. Diminuir unidades do item original
@@ -848,7 +1682,7 @@ app.post("/api/estoque_prod/converter-reverso", async (req, res) => {
           quantity: -unitsNeeded,
           previousStock: previousStock,
           newStock: newStock,
-          description: `Conversão reversa: ${unitsNeeded}x Unidade → ${parsedQty}x ${targetUnit}`,
+          description: `Conversão reversa: ${unitsNeeded}x ${baseUnit} → ${parsedQty}x ${targetUnit}`,
           referenceType: 'Conversion'
         }
       });
@@ -875,7 +1709,7 @@ app.post("/api/estoque_prod/converter-reverso", async (req, res) => {
             quantity: parsedQty,
             previousStock: prevPackedStock,
             newStock: newPackedStock,
-            description: `Conversão reversa: ${unitsNeeded}x Unidade → ${parsedQty}x ${targetUnit}`,
+            description: `Conversão reversa: ${unitsNeeded}x ${baseUnit} → ${parsedQty}x ${targetUnit}`,
             referenceType: 'Conversion'
           }
         });
@@ -899,16 +1733,16 @@ app.post("/api/estoque_prod/converter-reverso", async (req, res) => {
             quantity: parsedQty,
             previousStock: 0,
             newStock: parsedQty,
-            description: `Conversão reversa: ${unitsNeeded}x Unidade → ${parsedQty}x ${targetUnit} (novo registro)`,
+            description: `Conversão reversa: ${unitsNeeded}x ${baseUnit} → ${parsedQty}x ${targetUnit} (novo registro)`,
             referenceType: 'Conversion'
           }
         });
       }
 
       return {
-        origin: { id: estoqueItem.id, name: estoqueItem.name, unit: "Unidade", removed: unitsNeeded, remaining: newStock },
+        origin: { id: estoqueItem.id, name: estoqueItem.name, unit: baseUnit, removed: unitsNeeded, remaining: newStock },
         destination: { id: packedEstoqueItem.id, name: estoqueItem.name, unit: targetUnit, added: parsedQty, total: packedEstoqueItem.quantity },
-        conversionFactor: equivalence.value
+        conversionFactor: factor
       };
     });
 
@@ -939,6 +1773,9 @@ app.post("/api/estoque_prod/converter-dose", async (req, res) => {
       include: { product: true }
     });
     if (!estoqueItem) return res.status(404).json({ error: "Item não encontrado no estoque." });
+    if (estoqueItem.controlaMontante) {
+      return res.status(400).json({ error: MSG_MONTANTE_SEM_CONVERSAO });
+    }
     if (estoqueItem.quantity < parsedQty) {
       return res.status(400).json({ error: `Quantidade insuficiente. Disponível: ${estoqueItem.quantity} ${estoqueItem.unit}(s)` });
     }
@@ -1013,6 +1850,9 @@ app.post("/api/estoque_prod/converter-dose", async (req, res) => {
     console.error("Erro na conversão de dose:", error);
     res.status(500).json({ error: "Erro ao converter em porções", details: error.message });
   }
+});
+
+app.post("/api/estoque_prod", async (req, res) => {
   try {
     const { name, quantity, unit, value, valuecusto, categoryId, productId } = req.body;
 
@@ -1063,7 +1903,7 @@ app.post("/api/estoque_prod/converter-dose", async (req, res) => {
 
 app.put("/api/estoque_prod/:id", async (req, res) => {
   try {
-    const { name, quantity, unit, value, valuecusto, categoryId } = req.body;
+    const { name, quantity, unit, value, valuecusto, categoryId, contabiliza, mostrarPdv, isCombo, comboNome } = req.body;
 
     if (!name || !quantity || !unit) {
       return res.status(400).json({ error: "Todos os campos são obrigatórios." });
@@ -1084,15 +1924,34 @@ app.put("/api/estoque_prod/:id", async (req, res) => {
       return res.status(400).json({ error: "Custo deve ser um número válido." });
     }
 
+    // Item controlado por montante: a quantidade informada vira o novo montante (a sobra em ML é preservada).
+    let quantidadeFinal = parsedQuantity;
+    const itemAtual = await prisma.estoque.findUnique({ where: { id: parseInt(req.params.id) } });
+    if (itemAtual?.controlaMontante && parsedQuantity !== itemAtual.quantity) {
+      quantidadeFinal = await prisma.$transaction(async (tx) => {
+        const linhas = await linhasDoProduto(tx, itemAtual.productId, true);
+        const linha = linhas.find((l) => l.id === itemAtual.id);
+        const ml = linha ? mlDaLinha(linha, linha.product?.name) : null;
+        if (!ml) throw new Error(`Não foi possível identificar o volume (ML) de "${itemAtual.name}" (${itemAtual.unit}).`);
+        const sobra = (itemAtual.montanteMl || 0) - quantidadeDoMontante(itemAtual.montanteMl || 0, ml) * ml;
+        await sincronizarMontante(tx, itemAtual.productId, parsedQuantity * ml + sobra);
+        return parsedQuantity;
+      });
+    }
+
     const updatedProduct = await prisma.estoque.update({
       where: { id: parseInt(req.params.id) },
       data: { 
         name, 
-        quantity: parsedQuantity, 
+        quantity: quantidadeFinal, 
         unit, 
         value: parsedValue, 
         valuecusto: parsedValueCusto,
-        categoria_Id: categoryId ? parseInt(categoryId) : null
+        categoria_Id: categoryId ? parseInt(categoryId) : null,
+        ...(contabiliza !== undefined ? { contabiliza: Boolean(contabiliza) } : {}),
+        ...(mostrarPdv !== undefined ? { mostrarPdv: Boolean(mostrarPdv) } : {}),
+        ...(isCombo !== undefined ? { isCombo: Boolean(isCombo) } : {}),
+        ...(comboNome !== undefined ? { comboNome: comboNome || null } : {})
       },
       include: {
         product: true,
@@ -1134,10 +1993,30 @@ app.delete("/api/estoque_prod/:id", async (req, res) => {
 app.post("/api/verify-password", async (req, res) => {
   try {
     const { username, password } = req.body;
-    if (!username || !password) {
-      return res.status(400).json({ error: "Usuário e senha são obrigatórios" });
+    if (!password) {
+      return res.status(400).json({ error: "Senha é obrigatória" });
     }
-    const user = await prisma.user.findUnique({ where: { username } });
+
+    // Identifica o usuário preferencialmente pelo token JWT (enviado no header).
+    // Assim não depende do valor de "username" enviado pelo frontend, que pode
+    // conter o nome de exibição em vez do login.
+    let user = null;
+    const authHeader = req.headers.authorization;
+    if (authHeader) {
+      try {
+        const token = authHeader.split(" ")[1];
+        const decoded = jwt.verify(token, SECRET_KEY);
+        user = await prisma.user.findUnique({ where: { id: decoded.userId } });
+      } catch (tokenErr) {
+        // Token ausente/expirado: cai no fallback por username abaixo.
+      }
+    }
+
+    // Fallback: identifica pelo username informado no corpo da requisição.
+    if (!user && username) {
+      user = await prisma.user.findUnique({ where: { username } });
+    }
+
     if (!user) {
       return res.status(401).json({ error: "Usuário não encontrado" });
     }
@@ -1182,7 +2061,8 @@ app.get("/api/products", async (req, res) => {
           include: {
             parent: true
           }
-        }
+        },
+        estoqueItems: { select: { unit: true } }
       }
     });
     res.json(products);
@@ -1200,7 +2080,8 @@ app.get("/api/products/:id", async (req, res) => {
           include: {
             parent: true
           }
-        }
+        },
+        estoqueItems: { select: { unit: true } }
       }
     });
     res.json(product || { error: "Produto não encontrado" });
@@ -1212,15 +2093,10 @@ app.get("/api/products/:id", async (req, res) => {
 // Atualizar POST e PUT de produtos para incluir categoria com parent no retorno
 app.post("/api/products", async (req, res) => {
   try {
-    const { name, quantity, unit, value, valuecusto, categoryId } = req.body;
+    const { name, unit, value, valuecusto, categoryId, baseUnit, pdvHiddenUnits, unitPrices } = req.body;
 
-    if (!name || !quantity || !unit) {
-      return res.status(400).json({ error: "Todos os campos são obrigatórios." });
-    }
-
-    const parsedQuantity = parseInt(quantity, 10);
-    if (isNaN(parsedQuantity)) {
-      return res.status(400).json({ error: "Quantidade deve ser um número válido." });
+    if (!name || !unit) {
+      return res.status(400).json({ error: "Nome e unidade são obrigatórios." });
     }
 
     const parsedValue = parseFloat(value, 10);
@@ -1236,11 +2112,13 @@ app.post("/api/products", async (req, res) => {
     const newProduct = await prisma.product.create({
       data: { 
         name, 
-        quantity: parsedQuantity, 
         unit, 
         value: parsedValue, 
         valuecusto: parsedValueCusto,
-        categoryId: categoryId || null
+        categoryId: categoryId || null,
+        baseUnit: baseUnit || null,
+        pdvHiddenUnits: Array.isArray(pdvHiddenUnits) ? pdvHiddenUnits : [],
+        ...(unitPrices && typeof unitPrices === "object" ? { unitPrices } : {})
       },
       include: { 
         category: {
@@ -1259,16 +2137,12 @@ app.post("/api/products", async (req, res) => {
 
 app.put("/api/products/:id", async (req, res) => {
   try {
-    const { name, quantity, unit, value, valuecusto, categoryId } = req.body;
+    const { name, quantity, unit, value, valuecusto, categoryId, baseUnit, pdvHiddenUnits, unitPrices } = req.body;
 
-    if (!name || !quantity || !unit) {
+    if (!name || !unit) {
       return res.status(400).json({ error: "Todos os campos são obrigatórios." });
     }
 
-    const parsedQuantity = parseInt(quantity, 10);
-    if (isNaN(parsedQuantity)) {
-      return res.status(400).json({ error: "Quantidade deve ser um número válido." });
-    }
 
     const parsedValue = parseFloat(value, 10);
     if (isNaN(parsedValue)) {
@@ -1284,11 +2158,13 @@ app.put("/api/products/:id", async (req, res) => {
       where: { id: parseInt(req.params.id) },
       data: { 
         name, 
-        quantity: parsedQuantity, 
         unit, 
         value: parsedValue, 
         valuecusto: parsedValueCusto,
-        categoryId: categoryId || null
+        categoryId: categoryId || null,
+        baseUnit: baseUnit || null,
+        ...(pdvHiddenUnits !== undefined ? { pdvHiddenUnits: Array.isArray(pdvHiddenUnits) ? pdvHiddenUnits : [] } : {}),
+        ...(unitPrices !== undefined ? { unitPrices: unitPrices && typeof unitPrices === "object" ? unitPrices : null } : {})
       },
       include: { 
         category: {
@@ -1335,7 +2211,23 @@ app.post("/api/balances", async (req, res) => {
 });
 
 app.put("/api/balances/:id", async (req, res) => {
-  res.json(await prisma.balance.update({ where: { id: parseInt(req.params.id) }, data: req.body }));
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: "ID inválido" });
+
+    const vinculo = await prisma.pdvCaixaControle.findFirst({ where: { balanceId: id } });
+    if (vinculo) {
+      return res.status(409).json({
+        error: "Este registro está vinculado a um caixa fechado. Contate um administrador para realizar alterações.",
+        caixaId: vinculo.id,
+        fechadoEm: vinculo.fechadoEm,
+      });
+    }
+
+    res.json(await prisma.balance.update({ where: { id }, data: req.body }));
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao atualizar saldo", details: error.message });
+  }
 });
 
 app.delete("/api/balances/:id", async (req, res) => {
@@ -1343,6 +2235,17 @@ app.delete("/api/balances/:id", async (req, res) => {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) {
       return res.status(400).json({ error: "ID inválido" });
+    }
+
+    // Verificar se existe sub-caixa fechado vinculado a este Balance
+    const vinculo = await prisma.pdvCaixaControle.findFirst({ where: { balanceId: id } });
+    if (vinculo) {
+      return res.status(409).json({
+        error: "Este caixa está fechado e vinculado a um fechamento de turno. Não é possível excluí-lo. Contate um administrador.",
+        caixaId: vinculo.id,
+        fechadoEm: vinculo.fechadoEm,
+        fechadoPorNome: vinculo.fechadoPorNome,
+      });
     }
 
     await prisma.balance.delete({ where: { id } });
@@ -1490,7 +2393,8 @@ app.post("/api/employees", async (req, res) => {
       metasExtras = null,
       contato = null,
       dataEntrada = null,
-      ativo = true
+      ativo = true,
+      autoPonto = false
     } = req.body;
     
     const newEmployee = await prisma.employee.create({
@@ -1504,7 +2408,8 @@ app.post("/api/employees", async (req, res) => {
         metasExtras: metasExtras ? JSON.stringify(metasExtras) : null,
         contato,
         dataEntrada: dataEntrada ? new Date(dataEntrada) : null,
-        ativo
+        ativo,
+        autoPonto: autoPonto === true && (await usuarioEhAdmin(req))
       },
     });
     res.status(201).json(newEmployee);
@@ -1525,7 +2430,8 @@ app.put("/api/employees/:id", async (req, res) => {
       metasExtras,
       contato,
       dataEntrada,
-      ativo
+      ativo,
+      autoPonto
     } = req.body;
     
     // Construir objeto de atualização dinamicamente
@@ -1540,6 +2446,8 @@ app.put("/api/employees/:id", async (req, res) => {
     if (contato !== undefined) updateData.contato = contato;
     if (dataEntrada !== undefined) updateData.dataEntrada = dataEntrada ? new Date(dataEntrada) : null;
     if (ativo !== undefined) updateData.ativo = ativo;
+    // Somente administrador altera o ponto automático; para os demais o campo é ignorado.
+    if (autoPonto !== undefined && (await usuarioEhAdmin(req))) updateData.autoPonto = autoPonto === true;
     
     const updatedEmployee = await prisma.employee.update({
       where: { id: parseInt(req.params.id) },
@@ -2196,27 +3104,192 @@ app.delete("/api/categories/:id", async (req, res) => {
   }
 });
 
+// Baixa estoque de um item aplicando conversão automática de unidade irmã (mesma lógica dos itens de venda).
+// Usado tanto para itens normais quanto para componentes de composição.
+// Aceita o formato legado ({ grupoId: [opcaoId] }) e o novo com quantidade
+// ({ grupoId: [{ id, qtd }] }), devolvendo sempre [{ opcaoId, qtd }].
+function parseSelecoesComposicao(composicaoJSON) {
+  let selections;
+  try { selections = JSON.parse(composicaoJSON); } catch { return []; }
+  if (!selections || typeof selections !== 'object') return [];
+  const escolhas = [];
+  for (const opcoes of Object.values(selections)) {
+    if (!Array.isArray(opcoes)) continue;
+    for (const opcao of opcoes) {
+      if (opcao && typeof opcao === 'object') {
+        const opcaoId = Number(opcao.id);
+        if (opcaoId) escolhas.push({ opcaoId, qtd: Math.max(1, parseInt(opcao.qtd, 10) || 1) });
+      } else {
+        const opcaoId = Number(opcao);
+        if (opcaoId) escolhas.push({ opcaoId, qtd: 1 });
+      }
+    }
+  }
+  return escolhas;
+}
+
+async function baixarEstoqueComConversao(tx, estoqueId, needed, eqMap, saleId, descricao, rotuloErro) {
+  const estoqueItem = await tx.estoque.findUnique({ where: { id: estoqueId } });
+  if (!estoqueItem) return;
+  // Descartáveis (contabiliza=false) não baixam estoque
+  if (estoqueItem.contabiliza === false) return;
+
+  // Produto por montante: baixa em ML, sem conversão entre unidades
+  if (estoqueItem.controlaMontante) {
+    const mov = await movimentarMontante(tx, estoqueItem, -needed, rotuloErro);
+    await tx.stockMovement.create({
+      data: {
+        estoqueId: estoqueItem.id,
+        type: 'SALE',
+        quantity: -needed,
+        previousStock: mov.previousStock,
+        newStock: mov.newStock,
+        description: descricao,
+        referenceId: saleId,
+        referenceType: 'Sale'
+      }
+    });
+    return;
+  }
+
+  let currentStock = estoqueItem.quantity;
+
+  if (currentStock < needed) {
+    const deficit = needed - currentStock;
+    const siblings = await tx.estoque.findMany({
+      where: { productId: estoqueItem.productId, id: { not: estoqueItem.id } },
+      orderBy: { id: 'asc' }
+    });
+    let conversionDone = false;
+    for (const { sibling, ratio } of irmaosConversiveis(estoqueItem, siblings, eqMap)) {
+      const neededSiblings = Math.ceil(deficit / ratio);
+      if (sibling.quantity < neededSiblings) continue;
+
+      const gainedCurrentUnits = neededSiblings * ratio;
+      const siblingPrevStock = sibling.quantity;
+      const siblingNewStock = sibling.quantity - neededSiblings;
+
+      await tx.estoque.update({ where: { id: sibling.id }, data: { quantity: siblingNewStock } });
+      await tx.stockMovement.create({
+        data: {
+          estoqueId: sibling.id,
+          type: 'CONVERSION',
+          quantity: -neededSiblings,
+          previousStock: siblingPrevStock,
+          newStock: siblingNewStock,
+          description: `Conversão automática p/ Venda #${saleId}: ${neededSiblings}x ${sibling.unit} → ${gainedCurrentUnits}x ${estoqueItem.unit} (${descricao})`,
+          referenceId: saleId,
+          referenceType: 'Sale'
+        }
+      });
+
+      const stockAfterConversion = currentStock + gainedCurrentUnits;
+      await tx.estoque.update({ where: { id: estoqueItem.id }, data: { quantity: stockAfterConversion } });
+      await tx.stockMovement.create({
+        data: {
+          estoqueId: estoqueItem.id,
+          type: 'CONVERSION',
+          quantity: gainedCurrentUnits,
+          previousStock: currentStock,
+          newStock: stockAfterConversion,
+          description: `Conversão automática de ${neededSiblings}x ${sibling.unit} → ${gainedCurrentUnits}x ${estoqueItem.unit} p/ Venda #${saleId}`,
+          referenceId: saleId,
+          referenceType: 'Sale'
+        }
+      });
+
+      currentStock = stockAfterConversion;
+      conversionDone = true;
+      break;
+    }
+
+    if (!conversionDone) {
+      throw new Error(`Estoque insuficiente para ${rotuloErro || `"${estoqueItem.name}"`} (${estoqueItem.unit}). Disponível: ${estoqueItem.quantity}, Necessário: ${needed}.`);
+    }
+  }
+
+  const newStock = currentStock - needed;
+  await tx.estoque.update({ where: { id: estoqueItem.id }, data: { quantity: newStock } });
+  await tx.stockMovement.create({
+    data: {
+      estoqueId: estoqueItem.id,
+      type: 'SALE',
+      quantity: -needed,
+      previousStock: currentStock,
+      newStock: newStock,
+      description: descricao,
+      referenceId: saleId,
+      referenceType: 'Sale'
+    }
+  });
+}
+
 // Rota para criar uma nova venda (PDV) com baixa de estoque
 app.post('/api/sales', async (req, res) => {
   try {
-    const { items, total, paymentMethod, customerName, amountReceived, change, date, discount, splitPayments: splitPay, pendente, vale, subtotal, finalTotal } = req.body;
+    const { items, total, paymentMethod, customerName, amountReceived, change, date, discount, splitPayments: splitPay, pendente, vale, subtotal, finalTotal, origem, statusPedido, customerPhone, customerAddress, observacoes, saque } = req.body;
 
-    // Verificar estoque antes de prosseguir (verificação inicial rápida)
+    // Saque junto da venda (dinheiro entregue ao cliente + taxa sobre o saque)
+    const saqueValorNum = saque && parseFloat(saque.valor) > 0 ? parseFloat(saque.valor) : 0;
+    const saqueTaxaNum = saqueValorNum > 0 ? (parseFloat(saque.taxa) || 0) : 0;
+    const saqueFee = saqueValorNum > 0 ? saqueValorNum * (saqueTaxaNum / 100) : 0;
+
+    // Se há saque, exige caixa aberto para registrar a saída do dinheiro
+    if (saqueValorNum > 0) {
+      const caixaSaque = await prisma.pdvCaixaControle.findFirst({ where: { status: "ABERTO" } });
+      if (!caixaSaque) {
+        return res.status(400).json({ error: "Nenhum caixa aberto. Abra o caixa antes de realizar um saque na venda." });
+      }
+    }
+
+
+    // Identificar operador pelo token JWT
+    let operatorName = null;
+    try {
+      const authHeader = req.headers.authorization;
+      if (authHeader && authHeader.startsWith("Bearer ")) {
+        const token = authHeader.split(" ")[1];
+        const decoded = jwt.verify(token, SECRET_KEY);
+        const user = await prisma.user.findUnique({ where: { id: decoded.userId }, select: { name: true, username: true } });
+        if (user) operatorName = user.name || user.username;
+      }
+    } catch {}
+
+    // Verificar estoque antes de prosseguir (verificação inicial rápida, considera conversão automática)
+    const allEqsCheck = await prisma.unitEquivalence.findMany();
+    const eqMapCheck = {};
+    allEqsCheck.forEach(e => { eqMapCheck[e.unitName] = e; }); // mapa com objeto completo
+
     for (const item of items) {
       const estoqueItem = await prisma.estoque.findUnique({ where: { id: item.id } });
       if (!estoqueItem) {
         return res.status(400).json({ error: `Produto "${item.name}" não encontrado no estoque.` });
       }
+      // Itens com contabiliza=false não precisam de verificação de estoque
+      if (estoqueItem.contabiliza === false) continue;
+      // Combos não têm estoque próprio: a disponibilidade vem dos componentes,
+      // validados na baixa da composição dentro da transação.
+      if (estoqueItem.isCombo) continue;
       if (estoqueItem.quantity < item.quantity) {
-        // Buscar última venda que baixou este item para informar ao operador
-        const lastMovement = await prisma.stockMovement.findFirst({
-          where: { estoqueId: item.id, type: 'SALE' },
-          orderBy: { createdAt: 'desc' }
+        // Verificar se há conversão automática possível a partir de unidade irmã
+        const deficit = item.quantity - estoqueItem.quantity;
+        const siblings = await prisma.estoque.findMany({
+          where: { productId: estoqueItem.productId, id: { not: estoqueItem.id } },
+          orderBy: { id: 'asc' }
         });
-        const saleRef = lastMovement?.referenceId ? ` Último desconto registrado na Venda #${lastMovement.referenceId}.` : '';
-        return res.status(400).json({
-          error: `Estoque insuficiente para "${item.name}". Disponível: ${estoqueItem.quantity}, Solicitado: ${item.quantity}.${saleRef}`
-        });
+        const canConvert = !estoqueItem.controlaMontante && irmaosConversiveis(estoqueItem, siblings, eqMapCheck).some(
+          ({ sibling, ratio }) => sibling.quantity >= Math.ceil(deficit / ratio)
+        );
+        if (!canConvert) {
+          const lastMovement = await prisma.stockMovement.findFirst({
+            where: { estoqueId: item.id, type: 'SALE' },
+            orderBy: { createdAt: 'desc' }
+          });
+          const saleRef = lastMovement?.referenceId ? ` Último desconto registrado na Venda #${lastMovement.referenceId}.` : '';
+          return res.status(400).json({
+            error: `Estoque insuficiente para "${item.name}" (${estoqueItem.unit}). Disponível: ${estoqueItem.quantity}, Solicitado: ${item.quantity}.${saleRef}`
+          });
+        }
       }
     }
 
@@ -2252,7 +3325,7 @@ app.post('/api/sales', async (req, res) => {
       if (!isValid) return res.status(401).json({ error: "Senha do Vale incorreta." });
     }
 
-    const saleTotal = parseFloat(finalTotal || total);
+    const saleTotal = parseFloat(finalTotal || total) + saqueFee;
 
     // Usar transação para garantir consistência entre venda, estoque e movimentação
     const result = await prisma.$transaction(async (tx) => {
@@ -2265,6 +3338,14 @@ app.post('/api/sales', async (req, res) => {
           amountReceived: parseFloat(amountReceived) || saleTotal,
           change: parseFloat(change) || 0,
           date: parseISO(date),
+          operator: operatorName,
+          origem: origem === 'ONLINE' ? 'ONLINE' : 'PDV',
+          statusPedido: origem === 'ONLINE' ? (statusPedido || 'pending') : null,
+          customerPhone: customerPhone || null,
+          customerAddress: customerAddress || null,
+          observacoes: observacoes || null,
+          saqueValor: saqueValorNum,
+          saqueTaxa: saqueTaxaNum,
           items: {
             create: items.map(item => ({
               estoqueId: item.id,
@@ -2272,6 +3353,7 @@ app.post('/api/sales', async (req, res) => {
               quantity: item.quantity,
               unitPrice: item.price,
               total: item.price * item.quantity,
+              unit: item.unit || null,
               ...(item.composicao ? { composicao: item.composicao } : {})
             }))
           }
@@ -2281,37 +3363,133 @@ app.post('/api/sales', async (req, res) => {
         }
       });
 
-      // 2. Dar baixa no ESTOQUE e registrar movimentações (com re-verificação para concorrência)
+      // 2. Dar baixa no ESTOQUE e registrar movimentações (com conversão automática de unidades)
+      const allEqs = await tx.unitEquivalence.findMany();
+      const eqMap = {};
+      allEqs.forEach(e => { eqMap[e.unitName] = e; }); // mapa com objeto completo
+
       for (const item of items) {
         // Re-verificar estoque dentro da transação (proteção contra race condition)
-        const estoqueItem = await tx.estoque.findUnique({ where: { id: item.id } });
-        const previousStock = estoqueItem.quantity;
+        let estoqueItem = await tx.estoque.findUnique({ where: { id: item.id } });
+        let currentStock = estoqueItem.quantity;
 
-        if (previousStock < item.quantity) {
-          // Buscar última movimentação de venda para este item
-          const lastMovement = await tx.stockMovement.findFirst({
-            where: { estoqueId: item.id, type: 'SALE' },
-            orderBy: { createdAt: 'desc' }
-          });
-          const saleRef = lastMovement?.referenceId ? ` Último desconto registrado na Venda #${lastMovement.referenceId}.` : '';
-          throw new Error(`Estoque insuficiente para "${item.name}". Disponível: ${previousStock}, Solicitado: ${item.quantity}.${saleRef}`);
+        // Itens com contabiliza=false NÃO baixam estoque automaticamente (follow-up semanal)
+        if (estoqueItem.contabiliza === false) {
+          continue; // pular atualização de estoque para descartáveis
         }
 
-        const newStock = previousStock - item.quantity;
+        // Combos não baixam estoque próprio — só os componentes selecionados.
+        if (estoqueItem.isCombo) continue;
 
-        // Atualizar quantidade no estoque
+        // Produto por montante: baixa em ML direto, sem conversão entre unidades.
+        if (estoqueItem.controlaMontante) {
+          const mov = await movimentarMontante(tx, estoqueItem, -item.quantity, `"${item.name}"`);
+          await tx.stockMovement.create({
+            data: {
+              estoqueId: item.id,
+              type: 'SALE',
+              quantity: -item.quantity,
+              previousStock: mov.previousStock,
+              newStock: mov.newStock,
+              description: `Venda #${sale.id} - ${item.name} (${item.quantity}x)`,
+              referenceId: sale.id,
+              referenceType: 'Sale'
+            }
+          });
+          continue;
+        }
+
+        // Se estoque insuficiente, tentar conversão automática de unidade irmã
+        if (currentStock < item.quantity) {
+          const deficit = item.quantity - currentStock;
+
+          // Buscar itens do mesmo produto com unidade diferente
+          const siblings = await tx.estoque.findMany({
+            where: { productId: estoqueItem.productId, id: { not: estoqueItem.id } },
+            orderBy: { id: 'asc' }
+          });
+
+          let conversionDone = false;
+          for (const { sibling, ratio } of irmaosConversiveis(estoqueItem, siblings, eqMap)) {
+            const neededSiblings = Math.ceil(deficit / ratio);
+
+            if (sibling.quantity < neededSiblings) continue; // irmã também sem estoque suficiente
+
+            const gainedCurrentUnits = neededSiblings * ratio;
+            const siblingPrevStock = sibling.quantity;
+            const siblingNewStock = sibling.quantity - neededSiblings;
+
+            // Baixar da unidade irmã (maior)
+            await tx.estoque.update({
+              where: { id: sibling.id },
+              data: { quantity: siblingNewStock }
+            });
+
+            // Registrar movimentação de conversão na unidade irmã
+            await tx.stockMovement.create({
+              data: {
+                estoqueId: sibling.id,
+                type: 'CONVERSION',
+                quantity: -neededSiblings,
+                previousStock: siblingPrevStock,
+                newStock: siblingNewStock,
+                description: `Conversão automática p/ Venda #${sale.id}: ${neededSiblings}x ${sibling.unit} → ${gainedCurrentUnits}x ${estoqueItem.unit} (${item.name})`,
+                referenceId: sale.id,
+                referenceType: 'Sale'
+              }
+            });
+
+            // Adicionar unidades convertidas ao estoque atual antes de baixar a venda
+            const stockAfterConversion = currentStock + gainedCurrentUnits;
+            await tx.estoque.update({
+              where: { id: item.id },
+              data: { quantity: stockAfterConversion }
+            });
+
+            // Registrar movimentação de entrada pela conversão
+            await tx.stockMovement.create({
+              data: {
+                estoqueId: item.id,
+                type: 'CONVERSION',
+                quantity: gainedCurrentUnits,
+                previousStock: currentStock,
+                newStock: stockAfterConversion,
+                description: `Conversão automática de ${neededSiblings}x ${sibling.unit} → ${gainedCurrentUnits}x ${estoqueItem.unit} p/ Venda #${sale.id}`,
+                referenceId: sale.id,
+                referenceType: 'Sale'
+              }
+            });
+
+            currentStock = stockAfterConversion;
+            conversionDone = true;
+            break;
+          }
+
+          if (!conversionDone) {
+            const lastMovement = await tx.stockMovement.findFirst({
+              where: { estoqueId: item.id, type: 'SALE' },
+              orderBy: { createdAt: 'desc' }
+            });
+            const saleRef = lastMovement?.referenceId ? ` Último desconto registrado na Venda #${lastMovement.referenceId}.` : '';
+            throw new Error(`Estoque insuficiente para "${item.name}" (${estoqueItem.unit}). Disponível: ${estoqueItem.quantity}, Solicitado: ${item.quantity}.${saleRef}`);
+          }
+        }
+
+        const newStock = currentStock - item.quantity;
+
+        // Baixar do estoque (após eventual conversão)
         await tx.estoque.update({
           where: { id: item.id },
           data: { quantity: newStock }
         });
 
-        // Registrar movimentação de estoque
+        // Registrar movimentação de venda
         await tx.stockMovement.create({
           data: {
             estoqueId: item.id,
             type: 'SALE',
             quantity: -item.quantity,
-            previousStock: previousStock,
+            previousStock: currentStock,
             newStock: newStock,
             description: `Venda #${sale.id} - ${item.name} (${item.quantity}x)`,
             referenceId: sale.id,
@@ -2323,35 +3501,25 @@ app.post('/api/sales', async (req, res) => {
       // 2b. Dar baixa no estoque dos componentes de composição
       for (const item of items) {
         if (!item.composicao) continue;
-        let selections;
-        try { selections = JSON.parse(item.composicao); } catch { continue; }
-        // selections = { [composicaoId]: [opcaoId, ...] }
-        const allOpcaoIds = Object.values(selections).flat().map(Number).filter(Boolean);
-        if (allOpcaoIds.length === 0) continue;
+        const escolhas = parseSelecoesComposicao(item.composicao);
+        if (escolhas.length === 0) continue;
         const opcoes = await tx.composicaoOpcao.findMany({
-          where: { id: { in: allOpcaoIds }, estoqueId: { not: null } }
+          where: { id: { in: escolhas.map((e) => e.opcaoId) }, estoqueId: { not: null } }
         });
         for (const opcao of opcoes) {
-          const estoqueComp = await tx.estoque.findUnique({ where: { id: opcao.estoqueId } });
-          if (!estoqueComp) continue;
-          const needed = item.quantity; // 1 unidade do componente por item vendido
-          if (estoqueComp.quantity < needed) {
-            throw new Error(`Estoque insuficiente para o componente "${opcao.nome}" (${estoqueComp.name}). Disponível: ${estoqueComp.quantity}, Necessário: ${needed}.`);
-          }
-          const newQty = estoqueComp.quantity - needed;
-          await tx.estoque.update({ where: { id: opcao.estoqueId }, data: { quantity: newQty } });
-          await tx.stockMovement.create({
-            data: {
-              estoqueId: opcao.estoqueId,
-              type: 'SALE',
-              quantity: -needed,
-              previousStock: estoqueComp.quantity,
-              newStock: newQty,
-              description: `Venda #${sale.id} - Componente "${opcao.nome}" p/ ${item.name} (${needed}x)`,
-              referenceId: sale.id,
-              referenceType: 'Sale'
-            }
-          });
+          const escolhida = escolhas.find((e) => e.opcaoId === opcao.id);
+          // Quantidade escolhida pelo cliente para este componente x itens vendidos
+          const needed = item.quantity * (escolhida?.qtd || 1);
+          // Aplica conversão automática de unidade irmã (ex.: baixa 1 Dose convertendo 1 Garrafa)
+          await baixarEstoqueComConversao(
+            tx,
+            opcao.estoqueId,
+            needed,
+            eqMap,
+            sale.id,
+            `Venda #${sale.id} - Componente "${opcao.nome}" p/ ${item.name} (${needed}x)`,
+            `o componente "${opcao.nome}"`
+          );
         }
       }
 
@@ -2390,11 +3558,147 @@ app.post('/api/sales', async (req, res) => {
       }
 
       return sale;
-    });
+    }, { timeout: 30000, maxWait: 30000 });
+
+    // 5. Registrar entrada no caixa aberto (fora da transação para evitar isolamento)
+    try {
+      const caixaAberto = await prisma.pdvCaixaControle.findFirst({ where: { status: "ABERTO" } });
+      if (caixaAberto) {
+        // Não registrar vendas 100% pendentes (fiado) nem em Vale como entrada imediata no caixa.
+        // Vale não entra no caixa: é descontado do pagamento do funcionário no fim da semana (Gastos Bar).
+        const isPendenteTotal = !splitPay && paymentMethod?.toLowerCase().includes("pendente");
+        const isValeTotal = !splitPay && ((vale && vale.password) || paymentMethod?.toLowerCase().includes("vale"));
+        let valorEntrada = splitPay
+          ? splitPay
+              .filter(s => s.forma !== "pendente" && (s.forma || "").toLowerCase() !== "vale")
+              .reduce((acc, s) => acc + (parseFloat(s.valor) || 0), 0)
+          : (isPendenteTotal || isValeTotal) ? 0 : saleTotal;
+
+        // Com saque: o cliente também paga o valor sacado na máquina, então a entrada
+        // reflete o total cobrado (produtos + taxa + saque). A saída do dinheiro é lançada abaixo.
+        if (saqueValorNum > 0 && !splitPay && !isPendenteTotal && !isValeTotal) {
+          valorEntrada += saqueValorNum;
+        }
+
+        if (valorEntrada > 0) {
+          const descricaoEntrada = `Venda #${result.id} — ${customerName || "Cliente não identificado"}` +
+            (splitPay ? ` (${splitPay.map(s => `${s.forma}: R$${parseFloat(s.valor).toFixed(2)}`).join(", ")})` : ` — ${paymentMethod}`) +
+            (saqueValorNum > 0 ? ` (inclui saque R$${saqueValorNum.toFixed(2)})` : "");
+
+          await prisma.pdvCaixaTransacao.create({
+            data: {
+              caixaId: caixaAberto.id,
+              tipo: "ENTRADA",
+              categoria: "VENDA",
+              valor: valorEntrada,
+              descricao: descricaoEntrada,
+              userId: null,
+              userName: operatorName || null,
+            },
+          });
+        }
+
+        // Saída do dinheiro entregue ao cliente (saque junto da venda)
+        if (saqueValorNum > 0) {
+          await prisma.pdvCaixaTransacao.create({
+            data: {
+              caixaId: caixaAberto.id,
+              tipo: "SAIDA",
+              categoria: "SAQUE",
+              valor: saqueValorNum,
+              descricao: `Saque na Venda #${result.id} — R$${saqueValorNum.toFixed(2)} (taxa ${saqueTaxaNum}%, cobrado R$${(saqueValorNum + saqueFee).toFixed(2)})`,
+              userId: null,
+              userName: operatorName || null,
+            },
+          });
+        }
+      }
+    } catch (caixaErr) {
+      console.error("Erro ao registrar transação no caixa (não crítico):", caixaErr.message);
+    }
+
+    // 5b. Registrar lançamentos no Gastos Bar (venda em Vale => PRODUTO; desconto dado => DESCONTO).
+    // Atribuído ao operador logado no PDV. Funciona para web, mobile e NET de forma centralizada.
+    try {
+      const funcionarioGB = operatorName || "Operador";
+      const gastoBarCreates = [];
+
+      // Vale: registra os itens consumidos (proporcional ao valor pago em vale)
+      const valorVale = splitPay
+        ? parseFloat((splitPay.find(s => (s.forma || "").toLowerCase() === "vale") || {}).valor || 0)
+        : (((vale && vale.password) || paymentMethod?.toLowerCase().includes("vale")) ? parseFloat(finalTotal || total) || 0 : 0);
+
+      if (valorVale > 0 && Array.isArray(items) && items.length > 0) {
+        const totalItens = items.reduce((s, it) => s + ((parseFloat(it.price) || 0) * (parseFloat(it.quantity) || 0)), 0);
+        if (totalItens > 0) {
+          const proporcao = Math.min(valorVale / totalItens, 1);
+          const valeParcial = proporcao < 0.999;
+          for (const it of items) {
+            const qtd = parseFloat(it.quantity) || 0;
+            const valorBase = (parseFloat(it.price) || 0) * qtd;
+            const valorTotalItem = parseFloat((valorBase * proporcao).toFixed(2));
+            if (!qtd || !valorTotalItem) continue;
+            gastoBarCreates.push(prisma.pdvGastoBar.create({
+              data: {
+                tipo: "PRODUTO",
+                funcionario: funcionarioGB,
+                descricao: valeParcial ? `${it.name} (Vale parcial)` : it.name,
+                quantidade: qtd,
+                valorUnitario: parseFloat((valorTotalItem / qtd).toFixed(2)),
+                valorTotal: valorTotalItem,
+                saleId: result.id,
+              },
+            }));
+          }
+        }
+      }
+
+      // Desconto concedido pelo operador na venda
+      const valorDesconto = discount && parseFloat(discount.valor) > 0 ? parseFloat(discount.valor) : 0;
+      if (valorDesconto > 0) {
+        const nomesProdutos = items.map(it => `${it.quantity}x ${it.name}`).join(", ");
+        gastoBarCreates.push(prisma.pdvGastoBar.create({
+          data: {
+            tipo: "DESCONTO",
+            funcionario: funcionarioGB,
+            descricao: `Desconto na Venda #${result.id} — ${nomesProdutos}`,
+            valorTotal: valorDesconto,
+            saleId: result.id,
+          },
+        }));
+      }
+
+      if (gastoBarCreates.length > 0) await Promise.all(gastoBarCreates);
+    } catch (gbErr) {
+      console.error("Erro ao registrar Gastos Bar (não crítico):", gbErr.message);
+    }
+
+    // 6. Verificar estoque mínimo e atualizar ListaCompras para itens que baixaram estoque
+    try {
+      for (const item of items) {
+        const estoqueItem = await prisma.estoque.findUnique({ where: { id: item.id }, select: { quantity: true, contabiliza: true, isCombo: true } });
+        if (estoqueItem && estoqueItem.contabiliza !== false && !estoqueItem.isCombo) {
+          await criarListaComprasSeNecessario(item.id, estoqueItem.quantity);
+        }
+      }
+    } catch (lcErr) {
+      console.error("Erro ao verificar lista de compras (não crítico):", lcErr.message);
+    }
 
     res.status(201).json(result);
   } catch (error) {
     console.error('Erro ao criar venda:', error);
+    // Se for erro de negócio (estoque, comanda, etc), retornar mensagem legível
+    const isBusinessError = error.message && (
+      error.message.includes('Estoque insuficiente') ||
+      error.message.includes('estoque') ||
+      error.message.includes('Limite') ||
+      error.message.includes('senha') ||
+      error.message.includes('não encontrado')
+    );
+    if (isBusinessError) {
+      return res.status(400).json({ error: error.message });
+    }
     res.status(500).json({ error: 'Erro interno do servidor', details: error.message });
   }
 });
@@ -2402,18 +3706,140 @@ app.post('/api/sales', async (req, res) => {
 // Rota para buscar vendas
 app.get('/api/sales', async (req, res) => {
   try {
-    const sales = await prisma.sale.findMany({
-      include: {
-        items: true
-      },
-      orderBy: {
-        date: 'desc'
+    const { dataInicio, dataFim } = req.query;
+    const where = {};
+    if (dataInicio || dataFim) {
+      where.date = {};
+      if (dataInicio) where.date.gte = new Date(dataInicio + 'T00:00:00');
+      if (dataFim) {
+        const fim = new Date(dataFim + 'T23:59:59');
+        where.date.lte = fim;
       }
+    }
+    const sales = await prisma.sale.findMany({
+      where,
+      include: { items: true },
+      orderBy: { date: 'desc' },
     });
-    
     res.json(sales);
   } catch (error) {
     console.error('Erro ao buscar vendas:', error);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
+// ===== PEDIDOS ONLINE (origem ONLINE, vindos do Start-Pira-Net) =====
+
+// Status válidos e rótulos do fluxo de pedido online
+const PEDIDO_STATUS_LABELS = {
+  pending: 'Pendente',
+  preparing: 'Em preparo',
+  ready: 'Pronto para retirada',
+  delivered: 'Entregue',
+  cancelled: 'Cancelado'
+};
+
+// Normaliza telefone para o link wa.me (apenas dígitos, DDI 55 para BR)
+const normalizarTelefonePedido = (telefone) => {
+  if (!telefone) return null;
+  let digitos = String(telefone).replace(/\D/g, '');
+  if (!digitos) return null;
+  if (digitos.length <= 11) digitos = `55${digitos}`;
+  return digitos;
+};
+
+// Monta a mensagem de follow-up enviada ao cliente conforme a etapa
+const montarMensagemPedido = (sale, status) => {
+  const nome = sale.customerName || 'cliente';
+  const pedido = `#${sale.id}`;
+  const mensagens = {
+    pending: `Olá, ${nome}! 😊 Recebemos o seu pedido ${pedido} e já estamos cuidando dele. Em breve avisamos as próximas etapas!`,
+    preparing: `${nome}, seu pedido ${pedido} já está *em preparo*! 👩‍🍳 Logo logo fica pronto.`,
+    ready: `Boa notícia, ${nome}! ✅ Seu pedido ${pedido} está *pronto para retirada*!`,
+    delivered: `Pedido ${pedido} *entregue*! 🎉 Obrigado pela preferência, ${nome}. Bom apetite!`,
+    cancelled: `${nome}, infelizmente seu pedido ${pedido} foi *cancelado*. Em caso de dúvidas, fale com a gente.`
+  };
+  return mensagens[status] || `Atualização do seu pedido ${pedido}: ${PEDIDO_STATUS_LABELS[status] || status}.`;
+};
+
+// Gera o link wa.me de follow-up para o cliente (ou null se não houver telefone)
+const gerarLinkPedidoCliente = (sale, status) => {
+  const telefone = normalizarTelefonePedido(sale.customerPhone);
+  const mensagem = montarMensagemPedido(sale, status);
+  if (!telefone) return { link: null, mensagem, hasPhone: false };
+  return { link: `https://wa.me/${telefone}?text=${encodeURIComponent(mensagem)}`, mensagem, hasPhone: true };
+};
+
+// GET - Listar pedidos online (com filtro opcional por status)
+app.get('/api/sales/online', async (req, res) => {
+  try {
+    const { status } = req.query;
+    const where = { origem: 'ONLINE' };
+    if (status && PEDIDO_STATUS_LABELS[status]) where.statusPedido = status;
+
+    const pedidos = await prisma.sale.findMany({
+      where,
+      include: { items: true },
+      orderBy: { date: 'desc' },
+    });
+    res.json(pedidos);
+  } catch (error) {
+    console.error('Erro ao buscar pedidos online:', error);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
+// GET - Status (leve) de pedidos online por ids (ex: /api/sales/status?ids=1,2,3)
+// Usado pela API pública (net) para sincronizar o andamento no histórico do cliente.
+app.get('/api/sales/status', async (req, res) => {
+  try {
+    const idsParam = String(req.query.ids || '').trim();
+    if (!idsParam) return res.json([]);
+
+    const ids = idsParam
+      .split(',')
+      .map((v) => parseInt(v.trim(), 10))
+      .filter((n) => Number.isInteger(n));
+    if (ids.length === 0) return res.json([]);
+
+    const pedidos = await prisma.sale.findMany({
+      where: { id: { in: ids }, origem: 'ONLINE' },
+      select: { id: true, statusPedido: true },
+    });
+    res.json(pedidos);
+  } catch (error) {
+    console.error('Erro ao buscar status de pedidos:', error);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
+// PUT - Atualizar status de um pedido online (retorna link wa.me para o cliente)
+app.put('/api/sales/:id/status', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ error: 'ID inválido' });
+
+    const { status } = req.body;
+    if (!status || !PEDIDO_STATUS_LABELS[status]) {
+      return res.status(400).json({ error: 'Status inválido', validStatuses: Object.keys(PEDIDO_STATUS_LABELS) });
+    }
+
+    const existente = await prisma.sale.findUnique({ where: { id } });
+    if (!existente) return res.status(404).json({ error: 'Pedido não encontrado' });
+    if (existente.origem !== 'ONLINE') {
+      return res.status(400).json({ error: 'Apenas pedidos online possuem status gerenciável' });
+    }
+
+    const pedido = await prisma.sale.update({
+      where: { id },
+      data: { statusPedido: status },
+      include: { items: true },
+    });
+
+    const whatsapp = gerarLinkPedidoCliente(pedido, status);
+    res.json({ ...pedido, whatsapp });
+  } catch (error) {
+    console.error('Erro ao atualizar status do pedido:', error);
     res.status(500).json({ error: 'Erro interno do servidor' });
   }
 });
@@ -2496,17 +3922,21 @@ app.post('/api/stock-movements', async (req, res) => {
 
       const previousStock = estoqueItem.quantity;
       const parsedQty = parseFloat(quantity);
-      const newStock = previousStock + parsedQty; // positivo = entrada, negativo = saída
+      let newStock = previousStock + parsedQty; // positivo = entrada, negativo = saída
 
       if (newStock < 0) {
         throw new Error(`Estoque não pode ficar negativo. Estoque atual: ${previousStock}`);
       }
 
-      // Atualizar quantidade no estoque
-      await tx.estoque.update({
-        where: { id: parseInt(estoqueId) },
-        data: { quantity: newStock }
-      });
+      // Atualizar quantidade no estoque (itens por montante recalculam todas as unidades)
+      if (estoqueItem.controlaMontante) {
+        newStock = (await movimentarMontante(tx, estoqueItem, parsedQty)).newStock;
+      } else {
+        await tx.estoque.update({
+          where: { id: parseInt(estoqueId) },
+          data: { quantity: newStock }
+        });
+      }
 
       // Registrar movimentação
       const movement = await tx.stockMovement.create({
@@ -2553,10 +3983,17 @@ app.get('/api/unit-equivalences', async (req, res) => {
 // POST /api/unit-equivalences - Criar nova equivalência
 app.post('/api/unit-equivalences', async (req, res) => {
   try {
-    const { unitName, value } = req.body;
-    
-    if (!unitName || value === undefined || value === null || parseFloat(value) < 0) {
-      return res.status(400).json({ error: 'Nome da unidade e valor são obrigatórios' });
+    const { unitName, value, isFractional, fractionalValue } = req.body;
+    const isPorcao = isFractional === true || isFractional === 'true';
+
+    if (!unitName) {
+      return res.status(400).json({ error: 'Nome da unidade é obrigatório' });
+    }
+    if (!isPorcao && (value === undefined || value === null || parseFloat(value) < 0)) {
+      return res.status(400).json({ error: 'Valor é obrigatório para unidades empacotadas' });
+    }
+    if (isPorcao && (!fractionalValue || parseFloat(fractionalValue) <= 0)) {
+      return res.status(400).json({ error: 'Informe um valor maior que zero para a equivalência (ex: 0.5 para meia unidade ou 9 para 1 Garrafa → 9 Doses)' });
     }
 
     // Verificar se já existe equivalência para esta unidade
@@ -2571,7 +4008,9 @@ app.post('/api/unit-equivalences', async (req, res) => {
     const equivalence = await prisma.unitEquivalence.create({
       data: { 
         unitName, 
-        value: parseFloat(value) 
+        value: isPorcao ? 1 : parseFloat(value),
+        isFractional: isPorcao,
+        fractionalValue: isPorcao ? parseFloat(fractionalValue) : null
       }
     });
     
@@ -2586,15 +4025,23 @@ app.post('/api/unit-equivalences', async (req, res) => {
 app.put('/api/unit-equivalences/:unitName', async (req, res) => {
   try {
     const { unitName } = req.params;
-    const { value } = req.body;
-    
-    if (value === undefined || value === null || parseFloat(value) < 0) {
-      return res.status(400).json({ error: 'Valor é obrigatório e deve ser maior ou igual a zero' });
+    const { value, isFractional, fractionalValue } = req.body;
+    const isPorcao = isFractional === true || isFractional === 'true';
+
+    if (!isPorcao && (value === undefined || value === null || parseFloat(value) < 0)) {
+      return res.status(400).json({ error: 'Valor é obrigatório para unidades empacotadas' });
+    }
+    if (isPorcao && (!fractionalValue || parseFloat(fractionalValue) <= 0)) {
+      return res.status(400).json({ error: 'Informe um valor maior que zero para a equivalência (ex: 0.5 para meia unidade ou 9 para 1 Garrafa → 9 Doses)' });
     }
 
     const equivalence = await prisma.unitEquivalence.update({
       where: { unitName },
-      data: { value: parseFloat(value) }
+      data: { 
+        value: isPorcao ? 1 : parseFloat(value),
+        isFractional: isPorcao,
+        fractionalValue: isPorcao ? parseFloat(fractionalValue) : null
+      }
     });
     
     res.json(equivalence);
@@ -2631,12 +4078,15 @@ app.delete('/api/unit-equivalences/:unitName', async (req, res) => {
 // Rotas de opções devem vir ANTES das rotas com :id para evitar conflitos de roteamento
 app.put('/api/composicoes/opcoes/:id', async (req, res) => {
   try {
-    const { nome, valorExtra, disponivel, estoqueId } = req.body;
+    const { nome, valorExtra, disponivel, estoqueId, exclusivo, consomeQtd, base } = req.body;
     const updateData = {};
     if (nome !== undefined) updateData.nome = nome;
     if (valorExtra !== undefined) updateData.valorExtra = parseFloat(valorExtra) || 0;
     if (disponivel !== undefined) updateData.disponivel = disponivel !== false && disponivel !== 0;
     if (estoqueId !== undefined) updateData.estoqueId = estoqueId ? parseInt(estoqueId) : null;
+    if (exclusivo !== undefined) updateData.exclusivo = !!exclusivo;
+    if (base !== undefined) updateData.base = !!base;
+    if (consomeQtd !== undefined) updateData.consomeQtd = Math.max(1, parseInt(consomeQtd) || 1);
     const opcao = await prisma.composicaoOpcao.update({
       where: { id: parseInt(req.params.id) },
       data: updateData,
@@ -2672,13 +4122,15 @@ app.get('/api/composicoes/:estoqueId', async (req, res) => {
 
 app.post('/api/composicoes', async (req, res) => {
   try {
-    const { estoqueId, nome, descricao, obrigatorio, multiplo, minOpcoes, maxOpcoes, ordem } = req.body;
+    const { estoqueId, nome, descricao, obrigatorio, multiplo, minOpcoes, maxOpcoes, ordem, porcoesGratis, valorAdicional, permiteQuantidade, exigeTotalExato } = req.body;
     if (!estoqueId || !nome) return res.status(400).json({ error: 'estoqueId e nome são obrigatórios' });
     const comp = await prisma.composicaoProduto.create({
       data: {
         estoqueId: parseInt(estoqueId), nome, descricao: descricao || null,
         obrigatorio: obrigatorio !== false, multiplo: !!multiplo,
         minOpcoes: parseInt(minOpcoes) || 1, maxOpcoes: parseInt(maxOpcoes) || 1,
+        porcoesGratis: parseInt(porcoesGratis) || 0, valorAdicional: parseFloat(valorAdicional) || 0,
+        permiteQuantidade: !!permiteQuantidade, exigeTotalExato: !!exigeTotalExato,
         ordem: parseInt(ordem) || 0
       },
       include: { opcoes: true }
@@ -2691,10 +4143,13 @@ app.post('/api/composicoes', async (req, res) => {
 
 app.put('/api/composicoes/:id', async (req, res) => {
   try {
-    const { nome, descricao, obrigatorio, multiplo, minOpcoes, maxOpcoes, ordem } = req.body;
+    const { nome, descricao, obrigatorio, multiplo, minOpcoes, maxOpcoes, ordem, porcoesGratis, valorAdicional, permiteQuantidade, exigeTotalExato } = req.body;
+    const data = { nome, descricao, obrigatorio: !!obrigatorio, multiplo: !!multiplo, minOpcoes: parseInt(minOpcoes) || 1, maxOpcoes: parseInt(maxOpcoes) || 1, porcoesGratis: parseInt(porcoesGratis) || 0, valorAdicional: parseFloat(valorAdicional) || 0, ordem: parseInt(ordem) || 0 };
+    if (permiteQuantidade !== undefined) data.permiteQuantidade = !!permiteQuantidade;
+    if (exigeTotalExato !== undefined) data.exigeTotalExato = !!exigeTotalExato;
     const comp = await prisma.composicaoProduto.update({
       where: { id: parseInt(req.params.id) },
-      data: { nome, descricao, obrigatorio: !!obrigatorio, multiplo: !!multiplo, minOpcoes: parseInt(minOpcoes) || 1, maxOpcoes: parseInt(maxOpcoes) || 1, ordem: parseInt(ordem) || 0 },
+      data,
       include: { opcoes: true }
     });
     res.json(comp);
@@ -2714,7 +4169,7 @@ app.delete('/api/composicoes/:id', async (req, res) => {
 
 app.post('/api/composicoes/:id/opcoes', async (req, res) => {
   try {
-    const { nome, valorExtra, disponivel, estoqueId } = req.body;
+    const { nome, valorExtra, disponivel, estoqueId, exclusivo, consomeQtd, base } = req.body;
     if (!nome) return res.status(400).json({ error: 'Nome da opção é obrigatório' });
     const opcao = await prisma.composicaoOpcao.create({
       data: {
@@ -2722,6 +4177,9 @@ app.post('/api/composicoes/:id/opcoes', async (req, res) => {
         nome,
         valorExtra: parseFloat(valorExtra) || 0,
         disponivel: disponivel !== false,
+        exclusivo: !!exclusivo,
+        base: !!base,
+        consomeQtd: Math.max(1, parseInt(consomeQtd) || 1),
         ...(estoqueId ? { estoqueId: parseInt(estoqueId) } : {})
       },
       include: { estoque: { select: { id: true, name: true, quantity: true } } }
@@ -2792,6 +4250,26 @@ app.post('/api/composicoes/:id/opcao-estoque', async (req, res) => {
     res.status(201).json(result);
   } catch (error) {
     res.status(500).json({ error: 'Erro ao criar item de estoque e opção', details: error.message });
+  }
+});
+
+// Marca/desmarca um item de estoque como variação de venda (combo) e define o rótulo.
+app.patch('/api/estoque_prod/:id/combo', async (req, res) => {
+  try {
+    const { isCombo, comboNome } = req.body;
+    const data = {};
+    if (isCombo !== undefined) data.isCombo = Boolean(isCombo);
+    if (comboNome !== undefined) data.comboNome = comboNome || null;
+    const item = await prisma.estoque.update({
+      where: { id: parseInt(req.params.id) },
+      data,
+      include: {
+        composicoes: { include: { opcoes: { include: { estoque: { select: { id: true, name: true, quantity: true, productId: true, unit: true, controlaMontante: true } } }, orderBy: { id: 'asc' } } }, orderBy: { ordem: 'asc' } }
+      }
+    });
+    res.json(comEstoqueDeCombo(item));
+  } catch (error) {
+    res.status(500).json({ error: 'Erro ao configurar combo', details: error.message });
   }
 });
 
@@ -3010,6 +4488,7 @@ app.get("/api/employee-meta/:employeeId", async (req, res) => {
     res.status(500).json({ error: "Erro ao buscar meta do funcionário", details: error.message });
   }
 });
+
 
 // GET - Buscar todo o histórico de metas de um funcionário
 app.get("/api/employee-meta-history/:employeeId", async (req, res) => {
@@ -3259,6 +4738,7 @@ app.post("/api/employee-weekly-meta", async (req, res) => {
     res.status(500).json({ error: "Erro ao salvar meta semanal", details: error.message });
   }
 });
+
 
 // DELETE - Deletar meta semanal (volta a usar valores padrão do funcionário)
 app.delete("/api/employee-weekly-meta/:id", async (req, res) => {
@@ -3537,6 +5017,46 @@ app.post("/api/pdv-caixa-movimento", async (req, res) => {
       include: { origens: true },
     });
 
+    // Registrar no sub-caixa aberto (se houver)
+    const caixaAberto = await prisma.pdvCaixaControle.findFirst({ where: { status: "ABERTO" } });
+    if (caixaAberto) {
+      const descOrigens = (origens || []).filter(o => o.nome).map(o => `${o.nome} (R$ ${parseFloat(o.valor).toFixed(2)})`).join(", ");
+      await prisma.pdvCaixaTransacao.create({
+        data: {
+          caixaId: caixaAberto.id,
+          tipo: "ENTRADA",
+          categoria: "ADD",
+          valor: parseFloat(valor),
+          descricao: [descOrigens, observacao].filter(Boolean).join(" | ") || "Adição de dinheiro ao caixa",
+          userId,
+          userName,
+        },
+      });
+    }
+
+    // Descontar de cada origem de saldo (BAG / MÁQUINA / CAIXA) quando informada
+    const ORIGENS_VALIDAS = ["BAG", "MÁQUINA", "CAIXA"];
+    for (const og of (origens || []).filter(o => ORIGENS_VALIDAS.includes(o.nome) && parseFloat(o.valor) > 0)) {
+      try {
+        const origemReg = await prisma.pdvOrigemSaldo.findUnique({ where: { nome: og.nome } });
+        if (origemReg) {
+          const saldoAntes = origemReg.saldo;
+          const saldoDepois = saldoAntes - parseFloat(og.valor);
+          await prisma.$transaction([
+            prisma.pdvOrigemSaldo.update({ where: { nome: og.nome }, data: { saldo: saldoDepois } }),
+            prisma.pdvOrigemSaldoMovimento.create({
+              data: {
+                origemId: origemReg.id, tipo: "SAIDA", valor: parseFloat(og.valor),
+                saldoAntes, saldoDepois,
+                descricao: `ADD - ${observacao || "Adição ao caixa"}`,
+                userId, userName,
+              },
+            }),
+          ]);
+        }
+      } catch (e) { console.error("Erro ao descontar origem (ADD):", e.message); }
+    }
+
     res.status(201).json(movimento);
   } catch (error) {
     console.error("Erro ao registrar movimentação:", error);
@@ -3557,6 +5077,7 @@ app.post("/api/pdv-caixa-vale", async (req, res) => {
     let userId = null;
     let userName = null;
     let isAdmin = false;
+    let isFuncionario = false;
     try {
       const authHeader = req.headers.authorization;
       if (authHeader && authHeader.startsWith("Bearer ")) {
@@ -3566,6 +5087,7 @@ app.post("/api/pdv-caixa-vale", async (req, res) => {
         const user = await prisma.user.findUnique({ where: { id: userId } });
         userName = user?.name || user?.username || null;
         isAdmin = user?.acessos === true;
+        isFuncionario = user?.funcionario === true;
       }
     } catch (e) { /* ignora */ }
 
@@ -3625,7 +5147,73 @@ app.post("/api/pdv-caixa-vale", async (req, res) => {
       });
     }
 
-    res.status(201).json({ movimento, despesaPessoal, isAdmin });
+    // Lançar em GASTOS BAR (tipo VALE) o vale em dinheiro pego no PDV, atribuído a quem
+    // realizou a ação (admin ou funcionário). Para funcionário é deduzido no Ponto.
+    let gastoBar = null;
+    if (userName) {
+      let funcionarioId = null;
+      try {
+        const emp = await prisma.employee.findFirst({ where: { name: userName } });
+        funcionarioId = emp?.id || null;
+      } catch (e) { /* nome pode não bater com um funcionário do Ponto */ }
+
+      const descVale = [
+        origensPreenchidas.length > 0 ? "Origem: " + origensPreenchidas.map((o) => o.nome).join(", ") : null,
+        observacao || null,
+      ].filter(Boolean).join(" | ") || "Vale em dinheiro";
+
+      gastoBar = await prisma.pdvGastoBar.create({
+        data: {
+          tipo: "VALE",
+          funcionario: userName,
+          funcionarioId,
+          descricao: descVale,
+          valorTotal: parseFloat(valor),
+        },
+      });
+    }
+
+    // Registrar no sub-caixa aberto (se houver)
+    const caixaAberto = await prisma.pdvCaixaControle.findFirst({ where: { status: "ABERTO" } });
+    if (caixaAberto) {
+      const descOrigens = origensPreenchidas.map(o => `${o.nome} (R$ ${parseFloat(o.valor).toFixed(2)})`).join(", ");
+      await prisma.pdvCaixaTransacao.create({
+        data: {
+          caixaId: caixaAberto.id,
+          tipo: "SAIDA",
+          categoria: "VALE",
+          valor: parseFloat(valor),
+          descricao: [descOrigens, observacao].filter(Boolean).join(" | ") || "Vale / Sangria",
+          userId,
+          userName,
+        },
+      });
+    }
+
+    // Descontar de cada origem de saldo (BAG / MÁQUINA / CAIXA) quando informada
+    const ORIGENS_VALIDAS_VALE = ["BAG", "MÁQUINA", "CAIXA"];
+    for (const og of origensPreenchidas.filter(o => ORIGENS_VALIDAS_VALE.includes(o.nome))) {
+      try {
+        const origemReg = await prisma.pdvOrigemSaldo.findUnique({ where: { nome: og.nome } });
+        if (origemReg) {
+          const saldoAntes = origemReg.saldo;
+          const saldoDepois = saldoAntes - parseFloat(og.valor);
+          await prisma.$transaction([
+            prisma.pdvOrigemSaldo.update({ where: { nome: og.nome }, data: { saldo: saldoDepois } }),
+            prisma.pdvOrigemSaldoMovimento.create({
+              data: {
+                origemId: origemReg.id, tipo: "SAIDA", valor: parseFloat(og.valor),
+                saldoAntes, saldoDepois,
+                descricao: `VALE - ${observacao || "Vale / Sangria"}`,
+                userId, userName,
+              },
+            }),
+          ]);
+        }
+      } catch (e) { console.error("Erro ao descontar origem (VALE):", e.message); }
+    }
+
+    res.status(201).json({ movimento, despesaPessoal, gastoBar, isAdmin, isFuncionario });
   } catch (error) {
     console.error("Erro ao registrar vale:", error);
     res.status(500).json({ error: "Erro ao registrar vale", details: error.message });
@@ -3679,6 +5267,234 @@ app.post("/api/pdv-origens/init", async (req, res) => {
   }
 });
 
+// ===================== ROTAS DE SALDO POR ORIGEM (BAG / MÁQUINA / CAIXA) =====================
+
+// Buscar saldos de todas as origens
+app.get("/api/pdv-origem-saldo", async (req, res) => {
+  try {
+    const origens = await prisma.pdvOrigemSaldo.findMany({
+      orderBy: { nome: "asc" },
+    });
+
+    // Sincronizar origem "CAIXA" com o saldo real do caixa aberto
+    const caixaAberto = await prisma.pdvCaixaControle.findFirst({
+      where: { status: "ABERTO" },
+      include: { transacoes: true },
+    });
+
+    const result = origens.map(o => {
+      if (o.nome === "CAIXA") {
+        if (caixaAberto) {
+          const entradas = caixaAberto.transacoes.filter(t => t.tipo === "ENTRADA").reduce((s, t) => s + t.valor, 0);
+          const saidas = caixaAberto.transacoes.filter(t => t.tipo === "SAIDA").reduce((s, t) => s + t.valor, 0);
+          // saldoInicial já está incluído como transação ABERTURA (ENTRADA), não somar duas vezes
+          const saldoAtual = parseFloat((entradas - saidas).toFixed(2));
+          return { ...o, saldo: saldoAtual };
+        } else {
+          return { ...o, saldo: 0 };
+        }
+      }
+      return o;
+    });
+
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao buscar saldos", details: error.message });
+  }
+});
+
+// Inicializar as 3 origens padrão (idempotente)
+app.post("/api/pdv-origem-saldo/init", async (req, res) => {
+  try {
+    const origensDefault = ["BAG", "MÁQUINA", "CAIXA"];
+    const results = [];
+    for (const nome of origensDefault) {
+      const o = await prisma.pdvOrigemSaldo.upsert({
+        where: { nome },
+        update: {},
+        create: { nome, saldo: 0 },
+      });
+      results.push(o);
+    }
+    res.json(results);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao inicializar origens de saldo", details: error.message });
+  }
+});
+
+// Ajustar saldo de uma origem (ENTRADA, SAIDA ou AJUSTE direto)
+app.post("/api/pdv-origem-saldo/:nome/movimentar", async (req, res) => {
+  try {
+    const { nome } = req.params;
+    const { tipo, valor, descricao } = req.body;
+
+    if (!tipo || !["ENTRADA", "SAIDA", "AJUSTE"].includes(tipo)) {
+      return res.status(400).json({ error: "Tipo inválido. Use ENTRADA, SAIDA ou AJUSTE." });
+    }
+    const valorNum = parseFloat(valor);
+    if (isNaN(valorNum) || valorNum <= 0) {
+      return res.status(400).json({ error: "Valor inválido." });
+    }
+
+    // Extrair operador do token
+    let userId = null;
+    let userName = null;
+    try {
+      const authHeader = req.headers.authorization;
+      if (authHeader && authHeader.startsWith("Bearer ")) {
+        const token = authHeader.split(" ")[1];
+        const decoded = jwt.verify(token, SECRET_KEY);
+        userId = decoded.userId;
+        const user = await prisma.user.findUnique({ where: { id: userId } });
+        userName = user?.name || user?.username || null;
+      }
+    } catch (e) { /* ignora */ }
+
+    const origem = await prisma.pdvOrigemSaldo.findUnique({ where: { nome } });
+    if (!origem) {
+      return res.status(404).json({ error: `Origem "${nome}" não encontrada.` });
+    }
+
+    const saldoAntes = origem.saldo;
+    let saldoDepois;
+    if (tipo === "ENTRADA") saldoDepois = saldoAntes + valorNum;
+    else if (tipo === "SAIDA") saldoDepois = saldoAntes - valorNum;
+    else saldoDepois = valorNum; // AJUSTE = define diretamente
+
+    const result = await prisma.$transaction(async (tx) => {
+      const origemAtualizada = await tx.pdvOrigemSaldo.update({
+        where: { nome },
+        data: { saldo: saldoDepois },
+      });
+      const mov = await tx.pdvOrigemSaldoMovimento.create({
+        data: {
+          origemId: origem.id,
+          tipo,
+          valor: valorNum,
+          saldoAntes,
+          saldoDepois,
+          descricao: descricao || null,
+          userId,
+          userName,
+        },
+      });
+      return { origem: origemAtualizada, movimento: mov };
+    });
+
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao movimentar origem", details: error.message });
+  }
+});
+
+// Transferir valor entre duas origens
+app.post("/api/pdv-origem-saldo/transferir", async (req, res) => {
+  try {
+    const { origem: nomeOrigem, destino: nomeDestino, valor, descricao } = req.body;
+
+    if (!nomeOrigem || !nomeDestino || nomeOrigem === nomeDestino) {
+      return res.status(400).json({ error: "Origem e destino devem ser diferentes e informados." });
+    }
+    const valorNum = parseFloat(valor);
+    if (isNaN(valorNum) || valorNum <= 0) {
+      return res.status(400).json({ error: "Valor inválido." });
+    }
+
+    let userId = null;
+    let userName = null;
+    try {
+      const authHeader = req.headers.authorization;
+      if (authHeader && authHeader.startsWith("Bearer ")) {
+        const token = authHeader.split(" ")[1];
+        const decoded = jwt.verify(token, SECRET_KEY);
+        userId = decoded.userId;
+        const user = await prisma.user.findUnique({ where: { id: userId } });
+        userName = user?.name || user?.username || null;
+      }
+    } catch (e) { /* ignora */ }
+
+    const [fromOrigem, toOrigem] = await Promise.all([
+      prisma.pdvOrigemSaldo.findUnique({ where: { nome: nomeOrigem } }),
+      prisma.pdvOrigemSaldo.findUnique({ where: { nome: nomeDestino } }),
+    ]);
+    if (!fromOrigem) return res.status(404).json({ error: `Origem "${nomeOrigem}" não encontrada.` });
+    if (!toOrigem) return res.status(404).json({ error: `Destino "${nomeDestino}" não encontrado.` });
+    if (fromOrigem.saldo < valorNum) {
+      return res.status(400).json({ error: `Saldo insuficiente em "${nomeOrigem}". Disponível: R$ ${fromOrigem.saldo.toFixed(2)}.` });
+    }
+
+    const novoSaldoFrom = fromOrigem.saldo - valorNum;
+    const novoSaldoTo = toOrigem.saldo + valorNum;
+    const desc = descricao || `Transferência de ${nomeOrigem} → ${nomeDestino}`;
+
+    const result = await prisma.$transaction(async (tx) => {
+      const [from, to] = await Promise.all([
+        tx.pdvOrigemSaldo.update({ where: { nome: nomeOrigem }, data: { saldo: novoSaldoFrom } }),
+        tx.pdvOrigemSaldo.update({ where: { nome: nomeDestino }, data: { saldo: novoSaldoTo } }),
+      ]);
+      await Promise.all([
+        tx.pdvOrigemSaldoMovimento.create({
+          data: { origemId: fromOrigem.id, tipo: "SAIDA", valor: valorNum, saldoAntes: fromOrigem.saldo, saldoDepois: novoSaldoFrom, descricao: desc, userId, userName },
+        }),
+        tx.pdvOrigemSaldoMovimento.create({
+          data: { origemId: toOrigem.id, tipo: "ENTRADA", valor: valorNum, saldoAntes: toOrigem.saldo, saldoDepois: novoSaldoTo, descricao: desc, userId, userName },
+        }),
+      ]);
+      return { from, to };
+    });
+
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao transferir entre origens", details: error.message });
+  }
+});
+
+// Histórico de movimentos de uma origem
+app.get("/api/pdv-origem-saldo/:nome/historico", async (req, res) => {
+  try {
+    const { nome } = req.params;
+    const { limit = 50 } = req.query;
+
+    // Origem CAIXA: o histórico vem das transações do caixa aberto (mesma fonte do saldo),
+    // pois vendas/saque/abertura são registradas em pdvCaixaTransacao (e não em pdvOrigemSaldoMovimento).
+    if (nome === "CAIXA") {
+      const caixaAberto = await prisma.pdvCaixaControle.findFirst({
+        where: { status: "ABERTO" },
+        include: { transacoes: { orderBy: { createdAt: "asc" } } },
+      });
+      if (!caixaAberto) {
+        return res.json({ origem: { nome: "CAIXA", saldo: 0 }, movimentos: [] });
+      }
+      let saldo = 0;
+      const movsAsc = caixaAberto.transacoes.map((t) => {
+        saldo += t.tipo === "ENTRADA" ? t.valor : -t.valor;
+        return {
+          id: t.id,
+          tipo: t.tipo,
+          valor: t.valor,
+          saldoDepois: parseFloat(saldo.toFixed(2)),
+          descricao: t.descricao,
+          createdAt: t.createdAt,
+        };
+      });
+      const movimentos = movsAsc.reverse().slice(0, parseInt(limit));
+      return res.json({ origem: { nome: "CAIXA", saldo: parseFloat(saldo.toFixed(2)) }, movimentos });
+    }
+
+    const origem = await prisma.pdvOrigemSaldo.findUnique({ where: { nome } });
+    if (!origem) return res.status(404).json({ error: `Origem "${nome}" não encontrada.` });
+
+    const movimentos = await prisma.pdvOrigemSaldoMovimento.findMany({
+      where: { origemId: origem.id },
+      orderBy: { createdAt: "desc" },
+      take: parseInt(limit),
+    });
+    res.json({ origem, movimentos });
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao buscar histórico", details: error.message });
+  }
+});
+
 // ROTAS DE PRÊMIO (caça-níquel)
 app.post("/api/pdv-premio", async (req, res) => {
   try {
@@ -3724,6 +5540,46 @@ app.post("/api/pdv-premio", async (req, res) => {
       },
       include: { origens: true },
     });
+
+    // Registrar no sub-caixa aberto (se houver)
+    const caixaAberto = await prisma.pdvCaixaControle.findFirst({ where: { status: "ABERTO" } });
+    if (caixaAberto) {
+      const descOrigens = origensPreenchidas.map(o => `${o.nome} (R$ ${parseFloat(o.valor).toFixed(2)})`).join(", ");
+      await prisma.pdvCaixaTransacao.create({
+        data: {
+          caixaId: caixaAberto.id,
+          tipo: "SAIDA",
+          categoria: "PREMIO",
+          valor: parseFloat(valor),
+          descricao: [descOrigens, observacao].filter(Boolean).join(" | ") || "Prêmio de máquina",
+          userId,
+          userName,
+        },
+      });
+    }
+
+    // Descontar de cada origem de saldo (BAG / MÁQUINA / CAIXA) quando informada
+    const ORIGENS_VALIDAS_PREMIO = ["BAG", "MÁQUINA", "CAIXA"];
+    for (const og of origensPreenchidas.filter(o => ORIGENS_VALIDAS_PREMIO.includes(o.nome))) {
+      try {
+        const origemReg = await prisma.pdvOrigemSaldo.findUnique({ where: { nome: og.nome } });
+        if (origemReg) {
+          const saldoAntes = origemReg.saldo;
+          const saldoDepois = saldoAntes - parseFloat(og.valor);
+          await prisma.$transaction([
+            prisma.pdvOrigemSaldo.update({ where: { nome: og.nome }, data: { saldo: saldoDepois } }),
+            prisma.pdvOrigemSaldoMovimento.create({
+              data: {
+                origemId: origemReg.id, tipo: "SAIDA", valor: parseFloat(og.valor),
+                saldoAntes, saldoDepois,
+                descricao: `PRÊMIO - ${observacao || "Prêmio de máquina"}`,
+                userId, userName,
+              },
+            }),
+          ]);
+        }
+      } catch (e) { console.error("Erro ao descontar origem (PRÊMIO):", e.message); }
+    }
 
     res.status(201).json(premio);
   } catch (error) {
@@ -3978,10 +5834,14 @@ app.post("/api/pdv-formas-pagamento", async (req, res) => {
 
 app.put("/api/pdv-formas-pagamento/:id", async (req, res) => {
   try {
-    const { ativo } = req.body;
+    const { ativo, pointEnabled, pointType } = req.body;
+    const data = {};
+    if (ativo !== undefined) data.ativo = ativo;
+    if (pointEnabled !== undefined) data.pointEnabled = !!pointEnabled;
+    if (pointType !== undefined) data.pointType = pointType || null; // "credit_card" | "debit_card" | "pix" | "voucher" | null
     const forma = await prisma.pdvFormaPagamento.update({
       where: { id: parseInt(req.params.id) },
-      data: { ativo },
+      data,
     });
     res.json(forma);
   } catch (error) {
@@ -4138,8 +5998,12 @@ app.post("/api/pdv-comandas/:id/items", async (req, res) => {
           const estoqueItem = await tx.estoque.findUnique({ where: { id: item.id } });
           if (estoqueItem && estoqueItem.quantity >= item.quantity) {
             const prev = estoqueItem.quantity;
-            const novo = prev - item.quantity;
-            await tx.estoque.update({ where: { id: item.id }, data: { quantity: novo } });
+            let novo = prev - item.quantity;
+            if (estoqueItem.controlaMontante) {
+              novo = (await movimentarMontante(tx, estoqueItem, -item.quantity)).newStock;
+            } else {
+              await tx.estoque.update({ where: { id: item.id }, data: { quantity: novo } });
+            }
             await tx.stockMovement.create({
               data: {
                 estoqueId: item.id, type: 'SALE', quantity: -item.quantity,
@@ -4240,10 +6104,12 @@ app.get("/api/pdv-caixa-controle/atual", async (req, res) => {
       // Calcular saldo atual
       const entradas = caixaAberto.transacoes.filter(t => t.tipo === "ENTRADA").reduce((s, t) => s + t.valor, 0);
       const saidas = caixaAberto.transacoes.filter(t => t.tipo === "SAIDA").reduce((s, t) => s + t.valor, 0);
+      // ADD é reforço do caixa (não é receita): calculado separadamente para o display
+      const totalAdd = caixaAberto.transacoes.filter(t => t.categoria === "ADD").reduce((s, t) => s + t.valor, 0);
       // saldoInicial já está incluído como transação ABERTURA (ENTRADA), não somar duas vezes
       const saldoAtual = entradas - saidas;
       const horasAberto = (new Date() - new Date(caixaAberto.abertoEm)) / (1000 * 60 * 60);
-      return res.json({ ...caixaAberto, saldoAtual, totalEntradas: entradas, totalSaidas: saidas, horasAberto });
+      return res.json({ ...caixaAberto, saldoAtual, totalEntradas: entradas, totalSaidas: saidas, totalAdd, horasAberto });
     }
     // Se não há caixa aberto, retorna o último fechado
     const ultimoFechado = await prisma.pdvCaixaControle.findFirst({
@@ -4253,6 +6119,92 @@ app.get("/api/pdv-caixa-controle/atual", async (req, res) => {
     res.json({ caixaAberto: null, ultimoFechado });
   } catch (error) {
     res.status(500).json({ error: "Erro ao buscar caixa atual", details: error.message });
+  }
+});
+
+// Saque (troco via máquina): registra SAIDA do valor em dinheiro no sub-caixa
+// Taxa de saque — GET e PUT
+app.get("/api/pdv-saque/config", async (req, res) => {
+  try {
+    const config = await prisma.pdvConfigVenda.findUnique({ where: { chave: "taxa_saque_percentual" } });
+    const taxa = config ? parseFloat(config.valor) : 30;
+    res.json({ taxa });
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao buscar taxa de saque", details: error.message });
+  }
+});
+
+app.put("/api/pdv-saque/config", async (req, res) => {
+  try {
+    const { taxa } = req.body;
+    const taxaNum = parseFloat(taxa);
+    if (isNaN(taxaNum) || taxaNum < 0 || taxaNum > 100) {
+      return res.status(400).json({ error: "Taxa inválida. Informe um percentual entre 0 e 100." });
+    }
+    const config = await prisma.pdvConfigVenda.upsert({
+      where: { chave: "taxa_saque_percentual" },
+      update: { valor: String(taxaNum) },
+      create: { chave: "taxa_saque_percentual", valor: String(taxaNum), descricao: "Taxa percentual cobrada na máquina para saques (%)" },
+    });
+    res.json({ taxa: parseFloat(config.valor) });
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao salvar taxa de saque", details: error.message });
+  }
+});
+
+app.post("/api/pdv-saque", async (req, res) => {
+  try {
+    const { valor, observacao, formaPagamento, formaPagamentoNome } = req.body;
+    if (!valor || parseFloat(valor) <= 0) {
+      return res.status(400).json({ error: "Valor inválido para saque." });
+    }
+    const valorNum = parseFloat(valor);
+
+    // Extrair operador do token
+    let userId = null;
+    let userName = null;
+    try {
+      const authHeader = req.headers.authorization;
+      if (authHeader && authHeader.startsWith("Bearer ")) {
+        const token = authHeader.split(" ")[1];
+        const decoded = jwt.verify(token, SECRET_KEY);
+        userId = decoded.userId;
+        const user = await prisma.user.findUnique({ where: { id: userId } });
+        userName = user?.name || user?.username || null;
+      }
+    } catch (e) { /* ignora */ }
+
+    const caixaAberto = await prisma.pdvCaixaControle.findFirst({ where: { status: "ABERTO" } });
+    if (!caixaAberto) {
+      return res.status(400).json({ error: "Nenhum caixa aberto. Abra o caixa antes de realizar um saque." });
+    }
+
+    // Buscar taxa configurada (default 30%)
+    const taxaConfig = await prisma.pdvConfigVenda.findUnique({ where: { chave: "taxa_saque_percentual" } });
+    const taxaPerc = taxaConfig ? parseFloat(taxaConfig.valor) : 30;
+    const multiplicador = 1 + taxaPerc / 100;
+    const maquinaValor = (valorNum * multiplicador).toFixed(2);
+    const formaLabel = (formaPagamentoNome || formaPagamento || "").toString().trim();
+    const partes = [`Saque R$${valorNum.toFixed(2)} (máquina: R$${maquinaValor}, taxa ${taxaPerc}%)`];
+    if (formaLabel) partes.push(`Pagamento: ${formaLabel}`);
+    if (observacao) partes.push(observacao);
+    const descricao = partes.join(" — ");
+
+    const transacao = await prisma.pdvCaixaTransacao.create({
+      data: {
+        caixaId: caixaAberto.id,
+        tipo: "SAIDA",
+        categoria: "SAQUE",
+        valor: valorNum,
+        descricao,
+        userId,
+        userName,
+      },
+    });
+
+    res.status(201).json({ transacao, maquinaValor: parseFloat(maquinaValor), taxa: taxaPerc });
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao registrar saque", details: error.message });
   }
 });
 
@@ -4279,7 +6231,7 @@ app.get("/api/pdv-caixa-controle/historico", async (req, res) => {
 // Abrir novo caixa
 app.post("/api/pdv-caixa-controle/abrir", async (req, res) => {
   try {
-    const { saldoInicial, observacao } = req.body;
+    const { saldoInicial, observacao, origemBAG, origemMAQUINA } = req.body;
 
     // Verificar se já existe caixa aberto
     const caixaAberto = await prisma.pdvCaixaControle.findFirst({ where: { status: "ABERTO" } });
@@ -4321,6 +6273,36 @@ app.post("/api/pdv-caixa-controle/abrir", async (req, res) => {
       include: { transacoes: true },
     });
 
+    // Inicializar saldos de BAG e MÁQUINA se fornecidos
+    const initOrigem = async (nome, valor) => {
+      const reg = await prisma.pdvOrigemSaldo.findUnique({ where: { nome } });
+      if (!reg) return;
+      const saldoAntes = reg.saldo;
+      const saldoDepois = parseFloat(valor);
+      await prisma.$transaction([
+        prisma.pdvOrigemSaldo.update({ where: { nome }, data: { saldo: saldoDepois } }),
+        prisma.pdvOrigemSaldoMovimento.create({
+          data: {
+            origemId: reg.id,
+            tipo: "AJUSTE",
+            valor: Math.abs(saldoDepois - saldoAntes),
+            saldoAntes,
+            saldoDepois,
+            descricao: "Saldo inicial de abertura do caixa",
+            userId,
+            userName,
+          },
+        }),
+      ]);
+    };
+
+    if (origemBAG !== undefined && origemBAG !== null && origemBAG !== "") {
+      await initOrigem("BAG", origemBAG);
+    }
+    if (origemMAQUINA !== undefined && origemMAQUINA !== null && origemMAQUINA !== "") {
+      await initOrigem("MÁQUINA", origemMAQUINA);
+    }
+
     res.status(201).json(novoCaixa);
   } catch (error) {
     res.status(500).json({ error: "Erro ao abrir caixa", details: error.message });
@@ -4355,7 +6337,52 @@ app.put("/api/pdv-caixa-controle/fechar", async (req, res) => {
 
     const entradas = caixaAberto.transacoes.filter(t => t.tipo === "ENTRADA").reduce((s, t) => s + t.valor, 0);
     const saidas = caixaAberto.transacoes.filter(t => t.tipo === "SAIDA").reduce((s, t) => s + t.valor, 0);
-    const saldoFinal = caixaAberto.saldoInicial + entradas - saidas;
+    // saldoInicial já está incluído como transação ABERTURA (ENTRADA), não somar duas vezes
+    const saldoFinal = entradas - saidas;
+    const fechadoEm = new Date();
+
+    // Helpers de integração com Caixa Principal
+    const parseValorBRL = (valorStr) => {
+      if (!valorStr) return 0;
+      const normalizado = String(valorStr).replace(/\./g, "").replace(",", ".");
+      const v = parseFloat(normalizado);
+      return Number.isFinite(v) ? v : 0;
+    };
+
+    const extrairTotaisPorForma = (sale) => {
+      const payment = (sale.paymentMethod || "").trim();
+      const totalVenda = parseFloat(sale.total) || 0;
+
+      let dinheiro = 0;
+      let cartao = 0;
+
+      // Split gravado em string: "Dinheiro (R$ 10,00) + PIX (R$ 20,00)"
+      const regexSplit = /([^+]+?)\s*\(R\$\s*([0-9\.,]+)\)/gi;
+      let match;
+      let encontrouSplit = false;
+
+      while ((match = regexSplit.exec(payment)) !== null) {
+        encontrouSplit = true;
+        const nomeForma = (match[1] || "").toLowerCase().trim();
+        const valorForma = parseValorBRL(match[2]);
+        if (nomeForma.includes("dinheiro")) dinheiro += valorForma;
+        else cartao += valorForma; // regra: tudo que não é dinheiro conta como cartão
+      }
+
+      if (!encontrouSplit) {
+        if (payment.toLowerCase().includes("dinheiro")) dinheiro += totalVenda;
+        else cartao += totalVenda; // regra: tudo que não é dinheiro conta como cartão
+      }
+
+      return { dinheiro, cartao };
+    };
+
+    const formatDateYMD = (dateObj) => {
+      const y = dateObj.getFullYear();
+      const m = String(dateObj.getMonth() + 1).padStart(2, "0");
+      const d = String(dateObj.getDate()).padStart(2, "0");
+      return `${y}-${m}-${d}`;
+    };
 
     const caixaFechado = await prisma.pdvCaixaControle.update({
       where: { id: caixaAberto.id },
@@ -4366,11 +6393,79 @@ app.put("/api/pdv-caixa-controle/fechar", async (req, res) => {
         totalSaidas: saidas,
         fechadoPorId: userId,
         fechadoPorNome: userName,
-        fechadoEm: new Date(),
+        fechadoEm,
         observacao: observacao ? `${caixaAberto.observacao || ""} | Fechamento: ${observacao}`.trim() : caixaAberto.observacao,
       },
       include: { transacoes: true },
     });
+
+    // ================= INTEGRAÇÃO SUB-CAIXA (PDV) -> CAIXA PRINCIPAL =================
+    // Período operacional do caixa: abertura (dia N) até fechamento (dia N+1)
+    const vendasPeriodo = await prisma.sale.findMany({
+      where: {
+        date: {
+          gte: new Date(caixaAberto.abertoEm),
+          lte: fechadoEm,
+        },
+      },
+      select: {
+        id: true,
+        total: true,
+        paymentMethod: true,
+      },
+    });
+
+    const totais = vendasPeriodo.reduce(
+      (acc, sale) => {
+        const { dinheiro, cartao } = extrairTotaisPorForma(sale);
+        acc.dinheiro += dinheiro;
+        acc.cartao += cartao;
+        return acc;
+      },
+      { dinheiro: 0, cartao: 0 }
+    );
+
+    const valorDinheiroDia = parseFloat(totais.dinheiro.toFixed(2));
+    const valorCartaoDia = parseFloat(totais.cartao.toFixed(2));
+    const saldoInicialPrincipal = parseFloat((valorDinheiroDia + valorCartaoDia).toFixed(2));
+
+    // Data do caixa principal segue o dia operacional de ABERTURA do sub-caixa
+    const dataOperacional = formatDateYMD(new Date(caixaAberto.abertoEm));
+
+    const balanceExistente = await prisma.balance.findFirst({
+      where: { date: dataOperacional },
+      orderBy: { id: "desc" },
+    });
+
+    const payloadBalance = {
+      date: dataOperacional,
+      cartao: valorCartaoDia,
+      dinheiro: valorDinheiroDia,
+      balance: parseFloat(caixaAberto.saldoInicial.toFixed(2)), // saldo de abertura do sub-caixa
+      cartaofimcaixa: valorCartaoDia,
+      dinheirofimcaixa: valorDinheiroDia,
+      balancefim: parseFloat((valorDinheiroDia + valorCartaoDia).toFixed(2)),
+      lucro: 0,
+    };
+
+    if (balanceExistente) {
+      await prisma.balance.update({
+        where: { id: balanceExistente.id },
+        data: payloadBalance,
+      });
+      // Vincular sub-caixa ao Balance existente
+      await prisma.pdvCaixaControle.update({
+        where: { id: caixaFechado.id },
+        data: { balanceId: balanceExistente.id },
+      });
+    } else {
+      const novoBalance = await prisma.balance.create({ data: payloadBalance });
+      // Vincular sub-caixa ao novo Balance
+      await prisma.pdvCaixaControle.update({
+        where: { id: caixaFechado.id },
+        data: { balanceId: novoBalance.id },
+      });
+    }
 
     res.json(caixaFechado);
   } catch (error) {
@@ -4463,10 +6558,13 @@ app.get("/api/pdv-gastos-bar", async (req, res) => {
     const semanasMap = {};
     for (const g of gastos) {
       const weekKey = getWeekKey(g.createdAt);
-      if (!semanasMap[weekKey]) semanasMap[weekKey] = { semana: weekKey, produtos: [], descontos: [], totalProdutos: 0, totalDescontos: 0, total: 0 };
+      if (!semanasMap[weekKey]) semanasMap[weekKey] = { semana: weekKey, produtos: [], descontos: [], vales: [], totalProdutos: 0, totalDescontos: 0, totalVales: 0, total: 0 };
       if (g.tipo === "PRODUTO") {
         semanasMap[weekKey].produtos.push(g);
         semanasMap[weekKey].totalProdutos += g.valorTotal;
+      } else if (g.tipo === "VALE") {
+        semanasMap[weekKey].vales.push(g);
+        semanasMap[weekKey].totalVales += g.valorTotal;
       } else {
         semanasMap[weekKey].descontos.push(g);
         semanasMap[weekKey].totalDescontos += g.valorTotal;
@@ -4538,9 +6636,10 @@ app.get("/api/pdv-gastos-bar/resumo", async (req, res) => {
 
     const porFunc = {};
     for (const g of gastos) {
-      if (!porFunc[g.funcionario]) porFunc[g.funcionario] = { funcionario: g.funcionario, totalProdutos: 0, totalDescontos: 0, total: 0, itens: [] };
+      if (!porFunc[g.funcionario]) porFunc[g.funcionario] = { funcionario: g.funcionario, totalProdutos: 0, totalDescontos: 0, totalVales: 0, total: 0, itens: [] };
       porFunc[g.funcionario].itens.push(g);
       if (g.tipo === "PRODUTO") porFunc[g.funcionario].totalProdutos += g.valorTotal;
+      else if (g.tipo === "VALE") porFunc[g.funcionario].totalVales += g.valorTotal;
       else porFunc[g.funcionario].totalDescontos += g.valorTotal;
       porFunc[g.funcionario].total += g.valorTotal;
     }
@@ -4551,16 +6650,41 @@ app.get("/api/pdv-gastos-bar/resumo", async (req, res) => {
   }
 });
 
+// Total de Gastos Bar de um funcionário em um período (usado p/ deduzir do total a pagar no Ponto)
+app.get("/api/pdv-gastos-bar/funcionario/:nome", async (req, res) => {
+  try {
+    const nome = decodeURIComponent(req.params.nome).trim();
+    const { startDate, endDate } = req.query;
+    // Match case-insensitive: o nome do Employee pode diferir em caixa/espaços
+    // do funcionario gravado no PdvGastoBar (vindo do userName do PDV).
+    const where = { funcionario: { equals: nome, mode: "insensitive" } };
+    if (startDate || endDate) {
+      where.createdAt = {};
+      if (startDate) where.createdAt.gte = new Date(startDate);
+      if (endDate) where.createdAt.lte = new Date(endDate);
+    }
+    const gastos = await prisma.pdvGastoBar.findMany({ where, orderBy: { createdAt: "desc" } });
+    const total = gastos.reduce((s, g) => s + (g.valorTotal || 0), 0);
+    const totalProdutos = gastos.filter((g) => g.tipo === "PRODUTO").reduce((s, g) => s + (g.valorTotal || 0), 0);
+    const totalVales = gastos.filter((g) => g.tipo === "VALE").reduce((s, g) => s + (g.valorTotal || 0), 0);
+    const totalDescontos = gastos.filter((g) => g.tipo === "DESCONTO").reduce((s, g) => s + (g.valorTotal || 0), 0);
+    res.json({ funcionario: nome, total, totalProdutos, totalVales, totalDescontos, itens: gastos });
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao buscar gastos do funcionário", details: error.message });
+  }
+});
+
 // ROTAS DE AUDITORIA
 app.get("/api/auditoria", async (req, res) => {
   try {
-    const { modulo, acao, userId, userName, dataInicio, dataFim, page = 1, limit = 50 } = req.query;
+    const { modulo, acao, userId, userName, dataInicio, dataFim, dispositivo, page = 1, limit = 50 } = req.query;
     const where = {};
 
     if (modulo) where.modulo = modulo;
     if (acao) where.acao = acao;
     if (userId) where.userId = parseInt(userId);
     if (userName) where.userName = { contains: userName, mode: "insensitive" };
+    if (dispositivo) where.dispositivo = dispositivo;
     if (dataInicio || dataFim) {
       where.createdAt = {};
       if (dataInicio) where.createdAt.gte = new Date(dataInicio);
@@ -4619,6 +6743,21 @@ app.get("/api/auditoria/usuarios", async (req, res) => {
     res.json(usuarios);
   } catch (error) {
     res.status(500).json({ error: "Erro ao buscar usuários da auditoria", details: error.message });
+  }
+});
+
+// Retorna lista de dispositivos distintos para filtro
+app.get("/api/auditoria/dispositivos", async (req, res) => {
+  try {
+    const dispositivos = await prisma.auditoria.findMany({
+      select: { dispositivo: true },
+      distinct: ["dispositivo"],
+      where: { dispositivo: { not: null } },
+      orderBy: { dispositivo: "asc" },
+    });
+    res.json(dispositivos.map((d) => d.dispositivo));
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao buscar dispositivos", details: error.message });
   }
 });
 
@@ -4696,6 +6835,631 @@ app.post("/api/auditoria-config/init", async (req, res) => {
     res.json(results);
   } catch (error) {
     res.status(500).json({ error: "Erro ao inicializar configurações", details: error.message });
+  }
+});
+
+/* =========================================================================
+ * MERCADO PAGO POINT (pagamento presencial na maquininha)
+ * Integração via API de Orders unificada.
+ * Docs: https://www.mercadopago.com.br/developers/pt/docs/mp-point/overview
+ * ========================================================================= */
+
+const MP_BASE = "https://api.mercadopago.com";
+const POINT_CONFIG_KEYS = ["point_terminal_id", "point_print_on_terminal", "point_default_installments"];
+
+// Cria um cliente axios autenticado para o Mercado Pago.
+function mpClient() {
+  const token = process.env.MP_ACCESS_TOKEN;
+  if (!token) {
+    const err = new Error("MP_ACCESS_TOKEN não configurado no servidor. Defina a variável de ambiente com o Access Token da sua aplicação Mercado Pago.");
+    err.statusCode = 503;
+    throw err;
+  }
+  return axios.create({
+    baseURL: MP_BASE,
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    timeout: 20000,
+  });
+}
+
+// Normaliza mensagens de erro vindas do Mercado Pago.
+function mpErrorPayload(error) {
+  const status = error.response?.status || error.statusCode || 500;
+  const data = error.response?.data;
+  let message = data?.message || data?.error || error.message || "Erro ao comunicar com o Mercado Pago.";
+  // A Orders API detalha os erros em arrays (errors[] ou cause[]). Extrai algo legível.
+  const parts = [];
+  if (Array.isArray(data?.errors)) {
+    data.errors.forEach((e) => {
+      const det = Array.isArray(e.details) ? e.details.join(", ") : (e.details || "");
+      parts.push([e.code, e.message, det].filter(Boolean).join(": "));
+    });
+  }
+  if (Array.isArray(data?.cause)) {
+    data.cause.forEach((c) => parts.push([c.code, c.description].filter(Boolean).join(": ")));
+  }
+  if (parts.length) message = `${message} — ${parts.join(" | ")}`;
+  return { status, message, details: data || null };
+}
+
+// Lê a configuração da Point a partir de PdvConfigVenda (com fallback para env).
+async function getPointConfig() {
+  const rows = await prisma.pdvConfigVenda.findMany({ where: { chave: { in: POINT_CONFIG_KEYS } } });
+  const map = {};
+  rows.forEach((r) => { map[r.chave] = r.valor; });
+  return {
+    terminalId: map.point_terminal_id || process.env.MP_TERMINAL_ID || "",
+    printOnTerminal: ["seller_ticket", "no_ticket"].includes(map.point_print_on_terminal) ? map.point_print_on_terminal : "no_ticket",
+    defaultInstallments: parseInt(map.point_default_installments || "1", 10) || 1,
+  };
+}
+
+// Converte o status do Mercado Pago em um status normalizado para o PDV.
+function normalizePointStatus(mpStatus, action) {
+  const s = (action || mpStatus || "").toString().toLowerCase().replace("order.", "");
+  if (["processed", "accredited", "approved"].includes(s)) return "processed";
+  if (["canceled", "cancelled"].includes(s)) return "canceled";
+  if (s === "refunded") return "refunded";
+  if (s === "failed" || s === "rejected") return "failed";
+  if (s === "expired") return "expired";
+  if (s === "action_required") return "action_required";
+  return "pending"; // created, at_terminal, opened, etc.
+}
+
+// Gera uma referência externa válida (letras, números, - e _; máx. 64 chars).
+function buildExternalReference() {
+  const raw = `PDV-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
+  return raw.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64);
+}
+
+// Define quando a pré-seleção da modalidade deve usar a Payment Intents API.
+// A Orders API (type "point") NÃO permite pré-selecionar a modalidade; apenas a
+// Payment Intents API (legada) aceita payment.type = credit_card|debit_card para
+// abrir o terminal já na modalidade escolhida. Pix/Voucher não têm pré-seleção
+// via essa API, então caem no fluxo "point" (cliente escolhe no terminal).
+function usesPaymentIntent(paymentType) {
+  return paymentType === "credit_card" || paymentType === "debit_card";
+}
+
+// Normaliza o "state" da Payment Intents API para o status usado no PDV.
+function normalizePointIntentState(state) {
+  const s = (state || "").toString().toUpperCase();
+  if (s === "FINISHED") return "processed";
+  if (s === "CANCELED" || s === "ABANDONED") return "canceled";
+  if (s === "ERROR" || s === "REJECTED") return "failed";
+  if (s === "EXPIRED") return "expired";
+  // OPEN, ON_TERMINAL, PROCESSING, etc.
+  return "pending";
+}
+
+// GET config atual da Point + estado das credenciais.
+app.get("/api/point/config", async (req, res) => {
+  try {
+    const config = await getPointConfig();
+    res.json({
+      configured: !!process.env.MP_ACCESS_TOKEN && !!config.terminalId,
+      tokenConfigured: !!process.env.MP_ACCESS_TOKEN,
+      webhookConfigured: !!process.env.MP_WEBHOOK_SECRET,
+      terminal_id: config.terminalId,
+      print_on_terminal: config.printOnTerminal,
+      default_installments: config.defaultInstallments,
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao carregar configuração da Point", details: error.message });
+  }
+});
+
+// PUT atualiza config da Point.
+app.put("/api/point/config", async (req, res) => {
+  try {
+    const terminalId = req.body.terminalId ?? req.body.terminal_id;
+    const printOnTerminal = req.body.printOnTerminal ?? req.body.print_on_terminal;
+    const defaultInstallments = req.body.defaultInstallments ?? req.body.default_installments;
+    const updates = [];
+    if (terminalId !== undefined) updates.push(["point_terminal_id", String(terminalId)]);
+    if (printOnTerminal !== undefined) updates.push(["point_print_on_terminal", String(printOnTerminal)]);
+    if (defaultInstallments !== undefined) updates.push(["point_default_installments", String(defaultInstallments)]);
+    for (const [chave, valor] of updates) {
+      await prisma.pdvConfigVenda.upsert({
+        where: { chave },
+        update: { valor },
+        create: { chave, valor, descricao: "Configuração Mercado Pago Point" },
+      });
+    }
+    const config = await getPointConfig();
+    res.json({
+      configured: !!process.env.MP_ACCESS_TOKEN && !!config.terminalId,
+      tokenConfigured: !!process.env.MP_ACCESS_TOKEN,
+      webhookConfigured: !!process.env.MP_WEBHOOK_SECRET,
+      terminal_id: config.terminalId,
+      print_on_terminal: config.printOnTerminal,
+      default_installments: config.defaultInstallments,
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao salvar configuração da Point", details: error.message });
+  }
+});
+
+// GET lista de terminals Point vinculados à conta.
+app.get("/api/point/terminals", async (req, res) => {
+  try {
+    const { data } = await mpClient().get("/terminals/v1/list", { params: { limit: 50 } });
+    res.json({ terminals: data?.data?.terminals || [] });
+  } catch (error) {
+    const { status, message, details } = mpErrorPayload(error);
+    res.status(status).json({ error: message, details });
+  }
+});
+
+// POST ativa/desativa o modo de operação (PDV) de um terminal.
+app.post("/api/point/terminals/mode", async (req, res) => {
+  try {
+    const { terminalId, mode } = req.body;
+    if (!terminalId) return res.status(400).json({ error: "terminalId é obrigatório." });
+    const operating_mode = (mode || "PDV").toUpperCase() === "STANDALONE" ? "STANDALONE" : "PDV";
+    const { data } = await mpClient().patch("/terminals/v1/setup", {
+      terminals: [{ id: terminalId, operating_mode }],
+    });
+    res.json(data);
+  } catch (error) {
+    const { status, message, details } = mpErrorPayload(error);
+    res.status(status).json({ error: message, details });
+  }
+});
+
+// POST cria uma order de pagamento na maquininha.
+app.post("/api/point/orders", async (req, res) => {
+  const config = await getPointConfig();
+  const { amount, paymentType, installments, description } = req.body;
+  const terminalId = req.body.terminalId || config.terminalId;
+  const printOnTerminal = req.body.printOnTerminal || config.printOnTerminal;
+  const parsedAmount = Number(amount);
+
+  if (!terminalId) return res.status(400).json({ error: "Nenhum terminal Point configurado. Selecione um terminal nas configurações do PDV." });
+  if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) return res.status(400).json({ error: "Valor inválido para o pagamento." });
+
+  // Identifica o operador pelo token JWT (quando presente).
+  let operatorName = req.body.operator || null;
+  try {
+    const authHeader = req.headers.authorization;
+    if (!operatorName && authHeader?.startsWith("Bearer ")) {
+      const decoded = jwt.verify(authHeader.split(" ")[1], SECRET_KEY);
+      const user = await prisma.user.findUnique({ where: { id: decoded.userId }, select: { name: true, username: true } });
+      if (user) operatorName = user.name || user.username;
+    }
+  } catch { /* token opcional */ }
+
+  const externalReference = buildExternalReference();
+  const parcelas = parseInt(installments, 10) > 0 ? parseInt(installments, 10) : config.defaultInstallments;
+
+  // Registra a intenção localmente antes de enviar ao Mercado Pago.
+  const pointOrder = await prisma.pointOrder.create({
+    data: {
+      externalReference,
+      terminalId,
+      amount: parsedAmount,
+      paymentType: paymentType || null,
+      installments: parcelas,
+      description: description || "Venda PDV",
+      status: "created",
+      operator: operatorName,
+    },
+  });
+
+  // Para pré-selecionar a modalidade (crédito/débito) usamos a Payment Intents
+  // API (POST /point/integration-api/devices/{device_id}/payment-intents), que é
+  // a ÚNICA que aceita payment.type e faz o terminal abrir já na modalidade
+  // escolhida. A Orders API (type "point") não tem esse recurso.
+  if (usesPaymentIntent(paymentType)) {
+    const paymentBlock = { type: paymentType };
+    if (paymentType === "credit_card") {
+      paymentBlock.installments = parcelas;
+      paymentBlock.installments_cost = "seller";
+    }
+    const intentBody = {
+      amount: Math.round(parsedAmount * 100), // menor unidade da moeda (centavos)
+      description: description || "Venda PDV",
+      additional_info: {
+        external_reference: externalReference,
+        print_on_terminal: printOnTerminal === "seller_ticket",
+      },
+      payment: paymentBlock,
+    };
+
+    try {
+      const { data } = await mpClient().post(
+        `/point/integration-api/devices/${terminalId}/payment-intents`,
+        intentBody
+      );
+      const updated = await prisma.pointOrder.update({
+        where: { id: pointOrder.id },
+        data: {
+          mpOrderId: data.id, // guardamos o payment_intent_id em mpOrderId
+          status: normalizePointIntentState(data.state),
+          statusDetail: data.state || null,
+          rawPayload: JSON.stringify(data).slice(0, 4000),
+        },
+      });
+      return res.status(201).json({
+        id: updated.id,
+        mpOrderId: updated.mpOrderId,
+        externalReference: updated.externalReference,
+        terminalId: updated.terminalId,
+        amount: updated.amount,
+        status: updated.status,
+      });
+    } catch (error) {
+      const { status, message, details } = mpErrorPayload(error);
+      console.error("Erro ao criar payment intent Point no Mercado Pago:", status, JSON.stringify(details || message));
+      await prisma.pointOrder.update({
+        where: { id: pointOrder.id },
+        data: { status: "failed", statusDetail: message, rawPayload: JSON.stringify(details || {}).slice(0, 4000) },
+      });
+      return res.status(status).json({ error: message, details });
+    }
+  }
+
+  // Fluxo padrão (Orders API, type "point"): o cliente escolhe a modalidade no
+  // terminal. Usado quando não há pré-seleção (ou para Pix/Voucher, que não têm
+  // pré-seleção via Payment Intents API).
+  const mpBody = {
+    type: "point",
+    external_reference: externalReference,
+    transactions: { payments: [{ amount: parsedAmount.toFixed(2) }] },
+    config: {
+      point: {
+        terminal_id: terminalId,
+        print_on_terminal: printOnTerminal || "no_ticket",
+      },
+    },
+    description: description || "Venda PDV",
+  };
+
+  // Dados de integração opcionais (parceiro/integrador).
+  if (process.env.MP_INTEGRATOR_ID || process.env.MP_PLATFORM_ID) {
+    mpBody.integration_data = {
+      ...(process.env.MP_PLATFORM_ID ? { platform_id: process.env.MP_PLATFORM_ID } : {}),
+      ...(process.env.MP_INTEGRATOR_ID ? { integrator_id: process.env.MP_INTEGRATOR_ID } : {}),
+    };
+  }
+
+  try {
+    const { data } = await mpClient().post("/v1/orders", mpBody, {
+      headers: { "X-Idempotency-Key": crypto.randomUUID() },
+    });
+    const updated = await prisma.pointOrder.update({
+      where: { id: pointOrder.id },
+      data: {
+        mpOrderId: data.id,
+        status: normalizePointStatus(data.status),
+        statusDetail: data.status_detail || null,
+        rawPayload: JSON.stringify(data).slice(0, 4000),
+      },
+    });
+    res.status(201).json({
+      id: updated.id,
+      mpOrderId: updated.mpOrderId,
+      externalReference: updated.externalReference,
+      terminalId: updated.terminalId,
+      amount: updated.amount,
+      status: updated.status,
+    });
+  } catch (error) {
+    const { status, message, details } = mpErrorPayload(error);
+    console.error("Erro ao criar order Point no Mercado Pago:", status, JSON.stringify(details || message));
+    await prisma.pointOrder.update({
+      where: { id: pointOrder.id },
+      data: { status: "failed", statusDetail: message, rawPayload: JSON.stringify(details || {}).slice(0, 4000) },
+    });
+    res.status(status).json({ error: message, details });
+  }
+});
+
+// GET consulta o status de uma order (busca no Mercado Pago e atualiza o registro local).
+app.get("/api/point/orders/:id", async (req, res) => {
+  try {
+    const pointOrder = await prisma.pointOrder.findUnique({ where: { id: parseInt(req.params.id, 10) } });
+    if (!pointOrder) return res.status(404).json({ error: "Order não encontrada." });
+
+    // Sem mpOrderId (falha na criação) ou em estado final: devolve o que temos.
+    if (!pointOrder.mpOrderId) {
+      return res.json(serializePointOrder(pointOrder));
+    }
+
+    // Caminho Payment Intents API (modalidade pré-selecionada: crédito/débito).
+    if (usesPaymentIntent(pointOrder.paymentType)) {
+      try {
+        const { data } = await mpClient().get(`/point/integration-api/payment-intents/${pointOrder.mpOrderId}`);
+        const updated = await prisma.pointOrder.update({
+          where: { id: pointOrder.id },
+          data: {
+            status: normalizePointIntentState(data.state),
+            statusDetail: data.state || null,
+            mpPaymentId: data.payment?.id ? String(data.payment.id) : pointOrder.mpPaymentId,
+            rawPayload: JSON.stringify(data).slice(0, 4000),
+          },
+        });
+        return res.json(serializePointOrder(updated));
+      } catch (mpError) {
+        return res.json(serializePointOrder(pointOrder));
+      }
+    }
+
+    try {
+      const { data } = await mpClient().get(`/v1/orders/${pointOrder.mpOrderId}`);
+      const payment = data.transactions?.payments?.[0] || null;
+      const updated = await prisma.pointOrder.update({
+        where: { id: pointOrder.id },
+        data: {
+          status: normalizePointStatus(data.status),
+          statusDetail: data.status_detail || payment?.status_detail || null,
+          mpPaymentId: payment?.id || pointOrder.mpPaymentId,
+          rawPayload: JSON.stringify(data).slice(0, 4000),
+        },
+      });
+      return res.json(serializePointOrder(updated, data));
+    } catch (mpError) {
+      // Falha ao consultar o MP: retorna o status local conhecido.
+      return res.json(serializePointOrder(pointOrder));
+    }
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao consultar order", details: error.message });
+  }
+});
+
+function serializePointOrder(order, mpData) {
+  return {
+    id: order.id,
+    mpOrderId: order.mpOrderId,
+    externalReference: order.externalReference,
+    terminalId: order.terminalId,
+    amount: order.amount,
+    status: order.status,
+    statusDetail: order.statusDetail,
+    mpPaymentId: order.mpPaymentId,
+    saleId: order.saleId,
+    payment: mpData?.transactions?.payments?.[0] || null,
+  };
+}
+
+// POST cancela uma order em andamento.
+app.post("/api/point/orders/:id/cancel", async (req, res) => {
+  try {
+    const pointOrder = await prisma.pointOrder.findUnique({ where: { id: parseInt(req.params.id, 10) } });
+    if (!pointOrder) return res.status(404).json({ error: "Order não encontrada." });
+    if (pointOrder.mpOrderId) {
+      try {
+        if (usesPaymentIntent(pointOrder.paymentType)) {
+          // Payment Intents API: cancelamento via DELETE no device.
+          await mpClient().delete(`/point/integration-api/devices/${pointOrder.terminalId}/payment-intents/${pointOrder.mpOrderId}`);
+        } else {
+          await mpClient().post(`/v1/orders/${pointOrder.mpOrderId}/cancel`);
+        }
+      } catch (mpError) {
+        const { status, message, details } = mpErrorPayload(mpError);
+        // Se já estiver processada/cancelada, o MP retorna erro; propaga informação.
+        return res.status(status).json({ error: message, details });
+      }
+    }
+    const updated = await prisma.pointOrder.update({
+      where: { id: pointOrder.id },
+      data: { status: "canceled", statusDetail: "canceled_by_operator" },
+    });
+    res.json(serializePointOrder(updated));
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao cancelar order", details: error.message });
+  }
+});
+
+// PATCH vincula a venda gerada no PDV à order da Point (conciliação).
+app.patch("/api/point/orders/:id", async (req, res) => {
+  try {
+    const { saleId } = req.body;
+    const updated = await prisma.pointOrder.update({
+      where: { id: parseInt(req.params.id, 10) },
+      data: { ...(saleId !== undefined ? { saleId: parseInt(saleId, 10) } : {}) },
+    });
+    res.json(serializePointOrder(updated));
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao vincular venda à order", details: error.message });
+  }
+});
+
+/* -------------------------------------------------------------------------
+ * PIX ONLINE (QR na tela do PDV)
+ * Diferente da maquininha: gera um pagamento Pix via /v1/payments e retorna o
+ * QR Code (imagem base64 + copia e cola) para exibir na tela. O PDV faz polling
+ * até o Mercado Pago aprovar. Reutiliza o model PointOrder (terminalId fixo
+ * "PIX_ONLINE", paymentType "pix_online", mpPaymentId = id do pagamento MP).
+ * ------------------------------------------------------------------------- */
+
+// POST cria uma cobrança Pix online e retorna o QR para exibir na tela.
+app.post("/api/point/pix", async (req, res) => {
+  const { amount, description } = req.body;
+  const parsedAmount = Number(amount);
+
+  if (!process.env.MP_ACCESS_TOKEN) return res.status(503).json({ error: "MP_ACCESS_TOKEN não configurado no servidor." });
+  if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) return res.status(400).json({ error: "Valor inválido para o pagamento." });
+
+  // Identifica o operador pelo token JWT (quando presente).
+  let operatorName = req.body.operator || null;
+  try {
+    const authHeader = req.headers.authorization;
+    if (!operatorName && authHeader?.startsWith("Bearer ")) {
+      const decoded = jwt.verify(authHeader.split(" ")[1], SECRET_KEY);
+      const user = await prisma.user.findUnique({ where: { id: decoded.userId }, select: { name: true, username: true } });
+      if (user) operatorName = user.name || user.username;
+    }
+  } catch { /* token opcional */ }
+
+  const externalReference = buildExternalReference();
+  const descricao = description || "Venda PDV (Pix)";
+
+  // Registra a intenção localmente antes de enviar ao Mercado Pago.
+  const pointOrder = await prisma.pointOrder.create({
+    data: {
+      externalReference,
+      terminalId: "PIX_ONLINE",
+      amount: parsedAmount,
+      paymentType: "pix_online",
+      description: descricao,
+      status: "created",
+      operator: operatorName,
+    },
+  });
+
+  const expiracaoMin = parseInt(process.env.PIX_EXPIRACAO_MINUTOS || "30", 10) || 30;
+  const expiracao = new Date(Date.now() + expiracaoMin * 60 * 1000);
+  const body = {
+    transaction_amount: Number(parsedAmount.toFixed(2)),
+    description: descricao,
+    payment_method_id: "pix",
+    external_reference: externalReference,
+    date_of_expiration: expiracao.toISOString().replace("Z", "-00:00"),
+    payer: {
+      email: req.body.payerEmail || "cliente@startpira.com.br",
+      first_name: "Cliente",
+    },
+  };
+  if (process.env.MP_WEBHOOK_URL) body.notification_url = process.env.MP_WEBHOOK_URL;
+
+  try {
+    const { data } = await mpClient().post("/v1/payments", body, {
+      headers: { "X-Idempotency-Key": crypto.randomUUID() },
+    });
+    const tx = data?.point_of_interaction?.transaction_data || {};
+    await prisma.pointOrder.update({
+      where: { id: pointOrder.id },
+      data: {
+        mpPaymentId: String(data.id),
+        status: normalizePointStatus(data.status),
+        statusDetail: data.status_detail || null,
+        rawPayload: JSON.stringify({ id: data.id, status: data.status }).slice(0, 4000),
+      },
+    });
+    res.status(201).json({
+      id: pointOrder.id,
+      status: normalizePointStatus(data.status),
+      amount: parsedAmount,
+      qrCode: tx.qr_code || null,            // Pix copia e cola
+      qrCodeBase64: tx.qr_code_base64 || null, // imagem do QR (base64)
+      ticketUrl: tx.ticket_url || null,
+      expiresAt: data.date_of_expiration || null,
+    });
+  } catch (error) {
+    const { status, message, details } = mpErrorPayload(error);
+    console.error("Erro ao criar Pix online no Mercado Pago:", status, JSON.stringify(details || message));
+    await prisma.pointOrder.update({
+      where: { id: pointOrder.id },
+      data: { status: "failed", statusDetail: message, rawPayload: JSON.stringify(details || {}).slice(0, 4000) },
+    }).catch(() => {});
+    res.status(status).json({ error: message, details });
+  }
+});
+
+// GET consulta o status do Pix online (polling do PDV).
+app.get("/api/point/pix/:id", async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: "ID inválido." });
+
+  const pointOrder = await prisma.pointOrder.findUnique({ where: { id } });
+  if (!pointOrder) return res.status(404).json({ error: "Pagamento não encontrado." });
+
+  // Já aprovado anteriormente.
+  if (pointOrder.status === "processed") return res.json({ id, status: "processed" });
+  if (!pointOrder.mpPaymentId) return res.json({ id, status: pointOrder.status });
+
+  try {
+    const { data } = await mpClient().get(`/v1/payments/${pointOrder.mpPaymentId}`);
+    const status = normalizePointStatus(data.status);
+    if (status !== pointOrder.status) {
+      await prisma.pointOrder.update({
+        where: { id },
+        data: { status, statusDetail: data.status_detail || null },
+      }).catch(() => {});
+    }
+    res.json({ id, status, statusDetail: data.status_detail || null });
+  } catch (error) {
+    const { status, message, details } = mpErrorPayload(error);
+    res.status(status).json({ error: message, details });
+  }
+});
+
+// Valida a assinatura (x-signature) das notificações webhook do Mercado Pago.
+function validatePointWebhookSignature(req) {
+  const secret = process.env.MP_WEBHOOK_SECRET;
+  if (!secret) return true; // sem secret configurado (ambiente de desenvolvimento) -> não bloqueia
+  const xSignature = req.headers["x-signature"];
+  const xRequestId = req.headers["x-request-id"];
+  if (!xSignature) return false;
+
+  const parts = {};
+  xSignature.split(",").forEach((p) => {
+    const [k, v] = p.split("=");
+    if (k && v) parts[k.trim()] = v.trim();
+  });
+  const ts = parts.ts;
+  const receivedHash = parts.v1;
+  if (!ts || !receivedHash) return false;
+
+  const dataId = (req.query["data.id"] || req.query.id || req.body?.data?.id || "").toString();
+  let manifest = "";
+  if (dataId) manifest += `id:${dataId};`;
+  if (xRequestId) manifest += `request-id:${xRequestId};`;
+  manifest += `ts:${ts};`;
+
+  const expected = crypto.createHmac("sha256", secret).update(manifest).digest("hex");
+  try {
+    return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(receivedHash));
+  } catch {
+    return false;
+  }
+}
+
+// POST recebe as notificações de order do Mercado Pago Point.
+app.post("/api/point/webhook", async (req, res) => {
+  // Responde rápido; sempre 200 para evitar reenvios, mesmo em casos não tratados.
+  try {
+    if (!validatePointWebhookSignature(req)) {
+      return res.status(401).json({ error: "Assinatura inválida." });
+    }
+
+    const action = req.body?.action || null;
+    const mpOrderId = req.body?.data?.id || req.query["data.id"] || null;
+    if (mpOrderId) {
+      const existing = await prisma.pointOrder.findUnique({ where: { mpOrderId: String(mpOrderId) } });
+      if (existing) {
+        let status = normalizePointStatus(req.body?.data?.status, action);
+        let statusDetail = req.body?.data?.status_detail || action || null;
+        let mpPaymentId = req.body?.data?.transactions?.payments?.[0]?.id || existing.mpPaymentId;
+
+        // Em caso de aprovação, busca a order completa para registrar o pagamento.
+        if (status === "processed" && process.env.MP_ACCESS_TOKEN) {
+          try {
+            const { data } = await mpClient().get(`/v1/orders/${mpOrderId}`);
+            const payment = data.transactions?.payments?.[0];
+            status = normalizePointStatus(data.status, action);
+            statusDetail = data.status_detail || statusDetail;
+            mpPaymentId = payment?.id || mpPaymentId;
+          } catch { /* mantém dados do webhook */ }
+        }
+
+        await prisma.pointOrder.update({
+          where: { id: existing.id },
+          data: {
+            status,
+            statusDetail,
+            mpPaymentId,
+            rawPayload: JSON.stringify(req.body).slice(0, 4000),
+          },
+        });
+      }
+    }
+    return res.status(200).json({ received: true });
+  } catch (error) {
+    console.error("[Point webhook] erro:", error.message);
+    // Responde 200 para não gerar reenvios em loop; erro já foi logado.
+    return res.status(200).json({ received: true });
   }
 });
 

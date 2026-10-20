@@ -19,14 +19,15 @@ model Balance {
   dinheirofimcaixa Float?
   createdAt        DateTime  @default(now())
   updatedAt        DateTime?
+  subCaixas        PdvCaixaControle[]
 }
 
 model Client {
-  id        Int        @id @default(autoincrement())
+  id        Int          @id @default(autoincrement())
   name      String
   totalDebt Float
-  createdAt DateTime   @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
   Payment   Payment[]
   Purchase  Purchase[]
   Comanda   PdvComanda[]
@@ -43,13 +44,13 @@ model DailyReading {
 }
 
 model Despesa {
-  id           Int      @id @default(autoincrement())
+  id           Int       @id @default(autoincrement())
   nomeDespesa  String?
   valorDespesa Float?
   descDespesa  String?
   date         DateTime
   DespesaFixa  Boolean
-  createdAt    DateTime @default(now())
+  createdAt    DateTime  @default(now())
   updatedAt    DateTime? @updatedAt
 }
 
@@ -57,62 +58,74 @@ model Machine {
   id           Int            @id @default(autoincrement())
   name         String
   createdAt    DateTime       @default(now())
-  updatedAt    DateTime? @updatedAt
+  updatedAt    DateTime?      @updatedAt
   DailyReading DailyReading[]
 }
 
 model Payment {
-  id        Int      @id @default(autoincrement())
+  id        Int       @id @default(autoincrement())
   amount    Float
   date      String
   clientId  Int
-  createdAt DateTime @default(now())
+  createdAt DateTime  @default(now())
   updatedAt DateTime? @updatedAt
-  Client    Client   @relation(fields: [clientId], references: [id])
+  Client    Client    @relation(fields: [clientId], references: [id])
 }
 
 model Category {
-  id             Int         @id @default(autoincrement())
-  name           String
-  parentId       Int?        // Campo para subcategoria
-  parent         Category?   @relation("CategorySubcategories", fields: [parentId], references: [id])
-  subcategories  Category[]  @relation("CategorySubcategories")
-  products       Product[]
-  prod_estoq     Estoque[]
+  id            Int        @id @default(autoincrement())
+  name          String
+  parentId      Int? // Campo para subcategoria
+  parent        Category?  @relation("CategorySubcategories", fields: [parentId], references: [id])
+  subcategories Category[] @relation("CategorySubcategories")
+  products      Product[]
+  prod_estoq    Estoque[]
 }
 
 model Product {
-  id        Int      @id @default(autoincrement())
-  name      String
-  quantity  Int
-  unit      String
-  categoryId Int?
-  category   Category? @relation(fields: [categoryId], references: [id])
+  id             Int       @id @default(autoincrement())
+  name           String
+  quantity       Int?
+  unit           String
+  baseUnit       String? // unidade unitária (base = 1) do produto; null = automática (menor unidade cadastrada)
+  pdvHiddenUnits String[]  @default([]) // unidades que NÃO aparecem no PDV para este produto (ex.: "Fardo" na Coca-Cola)
+  categoryId     Int?
+  category       Category? @relation(fields: [categoryId], references: [id])
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime? @updatedAt
-  value     Float
-  valuecusto Float
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime? @updatedAt
+  value        Float
+  valuecusto   Float
+  unitPrices   Json? // valores por unidade comercializável: { "Maço": { "value": 12.0, "cost": 8.0 }, "Cigarro Solto": { "value": 0.75, "cost": 0.4 } }
   estoqueItems Estoque[]
 }
 
 model Estoque {
-  id          Int      @id @default(autoincrement())
-  productId   Int      // Vinculado ao catálogo de produtos
-  product     Product  @relation(fields: [productId], references: [id])
-  name        String
-  quantity    Int
-  unit        String
-  categoria_Id Int?
-  category   Category? @relation(fields: [categoria_Id], references: [id])
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime? @updatedAt
-  value      Float
-  valuecusto Float
-  stockMovements StockMovement[]
-  saleItems      SaleItem[]
-  composicoes    ComposicaoProduto[]
+  id               Int                 @id @default(autoincrement())
+  productId        Int // Vinculado ao catálogo de produtos
+  product          Product             @relation(fields: [productId], references: [id])
+  name             String
+  quantity         Int
+  unit             String
+  categoria_Id     Int?
+  category         Category?           @relation(fields: [categoria_Id], references: [id])
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime?           @updatedAt
+  value            Float
+  valuecusto       Float
+  contabiliza      Boolean             @default(true) // false = descartável (não baixa estoque; usa FollowUp)
+  mostrarPdv       Boolean             @default(true) // false = não aparece na tela de venda do PDV
+  isCombo          Boolean             @default(false) // true = não é unidade de medida real, e sim uma variação de venda (conjunto de produtos)
+  comboNome        String? // rótulo exibido no PDV para a variação (ex.: "Combo", "Kit")
+  controlaMontante Boolean             @default(false) // true = saldo da garrafa e das doses é controlado por um montante único em ML
+  montanteMl       Float               @default(0) // montante em ML do produto (igual em todas as linhas controladas do mesmo produto)
+  stockMovements   StockMovement[]
+  saleItems        SaleItem[]
+  composicoes      ComposicaoProduto[]
   composicaoOpcoes ComposicaoOpcao[]
+  estoqueMinimo    EstoqueMinimo?
+  listaCompras     ListaCompras[]
+  followUps        FollowUp[]
 
   @@index([productId])
 }
@@ -130,92 +143,95 @@ model Purchase {
 }
 
 model User {
-  id        Int      @id @default(autoincrement())
-  username  String   @unique
-  password  String
-  name      String?
-  caixa     Boolean?
-  produtos  Boolean?
-  maquinas  Boolean?
-  fiado     Boolean?
-  despesas  Boolean?
-  ponto     Boolean?
-  acessos   Boolean?
+  id           Int      @id @default(autoincrement())
+  username     String   @unique
+  password     String
+  name         String?
+  caixa        Boolean?
+  produtos     Boolean?
+  maquinas     Boolean?
+  fiado        Boolean?
+  despesas     Boolean?
+  ponto        Boolean?
+  acessos      Boolean?
   base_produto Boolean?
-  pdv Boolean?
-  pessoal Boolean?
-  auditoria Boolean?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  pdv          Boolean?
+  pessoal      Boolean?
+  auditoria    Boolean?
+  funcionario  Boolean? @default(false)
+  loginAt      DateTime? // Primeiro login do dia
+  logoutAt     DateTime? // Último logout confirmado do dia
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 }
 
 model Employee {
-  id          Int          @id @default(autoincrement())
-  name        String       // Nome do funcionário
-  position    String?      // Cargo do funcionário (opcional)
-  carga       Int          @default(0) // Mantido para compatibilidade
-  valorHora   Float        @default(0) // Valor por hora do funcionário
-  metaHoras   Float?       // Meta de horas semanais para bonificação (ATUAL)
-  bonificacao Float?       // Valor da bonificação semanal
-  metasExtras String?      // JSON: array de {metaHoras, bonificacao} para metas adicionais
-  contato     String?      // Contato do funcionário
-  dataEntrada DateTime?    // Data de entrada do funcionário
-  ativo       Boolean      @default(true) // Status do funcionário
-  createdAt   DateTime     @default(now()) // Data de criação do registro
+  id          Int                   @id @default(autoincrement())
+  name        String // Nome do funcionário
+  position    String? // Cargo do funcionário (opcional)
+  carga       Int                   @default(0) // Mantido para compatibilidade
+  valorHora   Float                 @default(0) // Valor por hora do funcionário
+  metaHoras   Float? // Meta de horas semanais para bonificação (ATUAL)
+  bonificacao Float? // Valor da bonificação semanal
+  metasExtras String? // JSON: array de {metaHoras, bonificacao} para metas adicionais
+  contato     String? // Contato do funcionário
+  dataEntrada DateTime? // Data de entrada do funcionário
+  ativo       Boolean               @default(true) // Status do funcionário
+  autoPonto   Boolean               @default(false) // Registra entrada/saída no Ponto a partir do login/logout
+  createdAt   DateTime              @default(now()) // Data de criação do registro
   points      DailyPoint[] // Relacionamento com os pontos diários
   metaHistory EmployeeMetaHistory[] // Histórico de metas
   weeklyMetas EmployeeWeeklyMeta[] // Metas por semana
 }
 
 model EmployeeMetaHistory {
-  id          Int      @id @default(autoincrement())
+  id          Int       @id @default(autoincrement())
   employeeId  Int
-  valorHora   Float    // Valor por hora
-  metaHoras   Float    // Meta de horas semanais
-  bonificacao Float    // Valor da bonificação
+  valorHora   Float // Valor por hora
+  metaHoras   Float // Meta de horas semanais
+  bonificacao Float // Valor da bonificação
   validFrom   DateTime // Data de início da vigência (primeiro dia do mês)
   validUntil  DateTime? // Data de fim da vigência (null = atual)
-  createdAt   DateTime @default(now())
-  employee    Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
-  
+  createdAt   DateTime  @default(now())
+  employee    Employee  @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
   @@index([employeeId, validFrom])
 }
 
 model DailyPoint {
-  id         Int      @id @default(autoincrement())
+  id         Int       @id @default(autoincrement())
   date       DateTime? // Data do ponto
   entry      DateTime? // Horário de entrada
   exit       DateTime? // Horário de saída
   gateOpen   DateTime? // Horário de abertura do portão (opcional)
-  falta      Boolean?  // Falta ou não
-  employeeId Int      // Relacionamento com o funcionário
-  employee   Employee @relation(fields: [employeeId], references: [id])
+  falta      Boolean? // Falta ou não
+  employeeId Int // Relacionamento com o funcionário
+  employee   Employee  @relation(fields: [employeeId], references: [id])
 }
 
 model EmployeeWeeklyMeta {
   id          Int      @id @default(autoincrement())
-  employeeId  Int      // ID do funcionário
-  year        Int      // Ano da semana
-  month       Int      // Mês da semana
+  employeeId  Int // ID do funcionário
+  year        Int // Ano da semana
+  month       Int // Mês da semana
   weekStart   DateTime // Data de início da semana (terça-feira)
   weekEnd     DateTime // Data de fim da semana (domingo)
-  metaHoras   Float    // Meta de horas semanais
-  bonificacao Float    // Valor da bonificação semanal
-  valorHora   Float    // Valor por hora (snapshot do momento)
-  metasExtras String?  // JSON: array de {metaHoras, bonificacao} para metas adicionais
+  metaHoras   Float // Meta de horas semanais
+  bonificacao Float // Valor da bonificação semanal
+  valorHora   Float // Valor por hora (snapshot do momento)
+  metasExtras String? // JSON: array de {metaHoras, bonificacao} para metas adicionais
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   employee    Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
-  
+
   @@unique([employeeId, weekStart])
   @@index([employeeId, year, month])
 }
 
 model CadDespesa {
-  id         Int      @id @default(autoincrement())
+  id          Int      @id @default(autoincrement())
   nomeDespesa String?
-  createdAt DateTime     @default(now()) // Data de criação do registro
-
+  createdAt   DateTime @default(now()) // Data de criação do registro
 }
 
 model MachineWeekValue {
@@ -229,42 +245,54 @@ model MachineWeekValue {
 }
 
 model Sale {
-  id             Int        @id @default(autoincrement())
-  total          Float
-  paymentMethod  String
-  customerName   String
-  amountReceived Float
-  change         Float
-  date           DateTime
-  items          SaleItem[]
-  createdAt      DateTime   @default(now())
-  updatedAt      DateTime   @updatedAt
+  id              Int        @id @default(autoincrement())
+  total           Float
+  paymentMethod   String
+  customerName    String
+  amountReceived  Float
+  change          Float
+  date            DateTime
+  operator        String?
+  origem          String     @default("PDV") // "PDV" ou "ONLINE" (pedido do Start-Pira-Net)
+  statusPedido    String?    @default("pending") // pending, preparing, ready, delivered, cancelled
+  customerPhone   String? // telefone do cliente (pedido online)
+  customerAddress String? // endereço do cliente (pedido online / entrega futura)
+  observacoes     String? // observações do cliente (pedido online)
+  saqueValor      Float      @default(0) // valor sacado em dinheiro entregue ao cliente (saque junto da venda)
+  saqueTaxa       Float      @default(0) // percentual de taxa aplicado sobre o saque
+  items           SaleItem[]
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  @@index([origem])
+  @@index([statusPedido])
 }
 
 model SaleItem {
-  id          Int      @id @default(autoincrement())
+  id          Int     @id @default(autoincrement())
   saleId      Int
   estoqueId   Int
   productName String
   quantity    Float
   unitPrice   Float
   total       Float
-  composicao  String?  // JSON com opções selecionadas pelo cliente
-  sale        Sale     @relation(fields: [saleId], references: [id])
-  estoque     Estoque  @relation(fields: [estoqueId], references: [id])
+  unit        String? // unidade de medida comercializada na venda (ex.: "Unidade", "Lata", "Dose")
+  composicao  String? // JSON com opções selecionadas pelo cliente
+  sale        Sale    @relation(fields: [saleId], references: [id])
+  estoque     Estoque @relation(fields: [estoqueId], references: [id])
 }
 
 model StockMovement {
   id            Int      @id @default(autoincrement())
   estoqueId     Int
   estoque       Estoque  @relation(fields: [estoqueId], references: [id])
-  type          String   // SALE, ADJUSTMENT, ENTRY, RETURN
-  quantity      Float    // quantidade movimentada (positivo = entrada, negativo = saída)
-  previousStock Int      // estoque antes da movimentação
-  newStock      Int      // estoque depois da movimentação
-  description   String?  // descrição/motivo da movimentação
-  referenceId   Int?     // ID da venda ou outra referência
-  referenceType String?  // "Sale", "Manual", etc.
+  type          String // SALE, ADJUSTMENT, ENTRY, RETURN
+  quantity      Float // quantidade movimentada (positivo = entrada, negativo = saída)
+  previousStock Int // estoque antes da movimentação
+  newStock      Int // estoque depois da movimentação
+  description   String? // descrição/motivo da movimentação
+  referenceId   Int? // ID da venda ou outra referência
+  referenceType String? // "Sale", "Manual", etc.
   createdAt     DateTime @default(now())
 
   @@index([estoqueId])
@@ -273,83 +301,88 @@ model StockMovement {
 }
 
 model UnitEquivalence {
-  id        Int      @id @default(autoincrement())
-  unitName  String   @unique
-  value     Float    // Quantas unidades representa (ex: 1 Maço = 20 Unidades)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id              Int      @id @default(autoincrement())
+  unitName        String   @unique
+  value           Float // Quantas unidades representa (ex: 1 Maço = 20 Unidades)
+  isFractional    Boolean  @default(false) // Indica que é uma unidade fracional (Dose, Taça, Copo...)
+  fractionalValue Float? // Quantas dessas unidades saem de 1 unidade-pai (ex: 1 Unidade → 9 Doses)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 }
 
-model DespPessoal{
-  id           Int      @id @default(autoincrement())
-  nomeDespesa  String
-  valorDespesa Float?
-  descDespesa  String?
-  date         DateTime
-  DespesaFixa  Boolean
-  tipoMovimento String  @default("GASTO") // "GASTO" ou "GANHO"
-  categoriaId  Int?
-  categoria    CatDespPessoal? @relation(fields: [categoriaId], references: [id])
+model DespPessoal {
+  id                Int             @id @default(autoincrement())
+  nomeDespesa       String
+  valorDespesa      Float?
+  descDespesa       String?
+  date              DateTime
+  DespesaFixa       Boolean
+  tipoMovimento     String          @default("GASTO") // "GASTO" ou "GANHO"
+  categoriaId       Int?
+  categoria         CatDespPessoal? @relation(fields: [categoriaId], references: [id])
   valeRelacionadoId Int? // ID do registro relacionado (GASTO <-> GANHO/VALE)
-  isVale       Boolean  @default(false) // Indica se é um vale
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime? @updatedAt
+  isVale            Boolean         @default(false) // Indica se é um vale
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime?       @updatedAt
 }
 
-model CatDespPessoal{
-  id           Int      @id @default(autoincrement())
-  nomeCategoria  String?
-  createdAt    DateTime @default(now())
-  DespPessoal DespPessoal[]
+model CatDespPessoal {
+  id            Int           @id @default(autoincrement())
+  nomeCategoria String?
+  createdAt     DateTime      @default(now())
+  DespPessoal   DespPessoal[]
 }
 
 model Auditoria {
   id          Int      @id @default(autoincrement())
-  modulo      String   // Nome do módulo (caixa, pdv, fiado, etc.)
-  acao        String   // Método HTTP: POST, PUT, DELETE, GET
-  descricao   String?  // Descrição da ação realizada
-  rota        String   // Rota da API chamada
-  userId      Int?     // ID do usuário que realizou a ação
-  userName    String?  // Nome do usuário para consulta rápida
-  ip          String?  // IP do requisitante
-  payload     String?  // JSON com dados enviados (body resumido)
+  modulo      String // Nome do módulo (caixa, pdv, fiado, etc.)
+  acao        String // Método HTTP: POST, PUT, DELETE, GET
+  descricao   String? // Descrição da ação realizada
+  rota        String // Rota da API chamada
+  userId      Int? // ID do usuário que realizou a ação
+  userName    String? // Nome do usuário para consulta rápida
+  ip          String? // IP do requisitante
+  payload     String? // JSON com dados enviados (body resumido)
+  dispositivo String? // Dispositivo/origem da acao (Aplicativo Mobile, navegador, etc.)
+  userAgent   String? // User-Agent bruto do requisitante
   createdAt   DateTime @default(now())
 
   @@index([modulo])
   @@index([userId])
   @@index([createdAt])
   @@index([acao])
+  @@index([dispositivo])
 }
 
 model AuditoriaConfig {
-  id          Int      @id @default(autoincrement())
-  modulo      String   @unique // Nome do módulo
-  ativo       Boolean  @default(true) // Se o módulo deve ser auditado
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id        Int      @id @default(autoincrement())
+  modulo    String   @unique // Nome do módulo
+  ativo     Boolean  @default(true) // Se o módulo deve ser auditado
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model PdvCaixaMovimento {
-  id          Int      @id @default(autoincrement())
-  tipo        String   // "ADD", "SANGRIA", etc.
-  valor       Float
-  origens     PdvCaixaOrigem[]
-  userId      Int?
-  userName    String?
-  observacao  String?
-  createdAt   DateTime @default(now())
+  id         Int              @id @default(autoincrement())
+  tipo       String // "ADD", "SANGRIA", etc.
+  valor      Float
+  origens    PdvCaixaOrigem[]
+  userId     Int?
+  userName   String?
+  observacao String?
+  createdAt  DateTime         @default(now())
 
   @@index([tipo])
   @@index([createdAt])
 }
 
 model PdvCaixaOrigem {
-  id            Int      @id @default(autoincrement())
-  movimentoId   Int
-  movimento     PdvCaixaMovimento @relation(fields: [movimentoId], references: [id], onDelete: Cascade)
-  nome          String   // Nome da origem (ex: "Cofre", "Banco", "Pessoal")
-  valor         Float
-  createdAt     DateTime @default(now())
+  id          Int               @id @default(autoincrement())
+  movimentoId Int
+  movimento   PdvCaixaMovimento @relation(fields: [movimentoId], references: [id], onDelete: Cascade)
+  nome        String // Nome da origem (ex: "Cofre", "Banco", "Pessoal")
+  valor       Float
+  createdAt   DateTime          @default(now())
 
   @@index([movimentoId])
 }
@@ -363,87 +396,89 @@ model PdvOrigemConfig {
 }
 
 model PdvPremio {
-  id          Int      @id @default(autoincrement())
-  imagem1     String   @db.Text // Base64 - prova do ganho no caça-níquel
-  imagem2     String   @db.Text // Base64 - prova da baixa do valor no jogo
-  valor       Float
-  observacao  String?
-  userId      Int?
-  userName    String?
-  origens     PdvPremioOrigem[]
-  createdAt   DateTime @default(now())
+  id         Int               @id @default(autoincrement())
+  imagem1    String            @db.Text // Base64 - prova do ganho no caça-níquel
+  imagem2    String            @db.Text // Base64 - prova da baixa do valor no jogo
+  valor      Float
+  observacao String?
+  userId     Int?
+  userName   String?
+  origens    PdvPremioOrigem[]
+  createdAt  DateTime          @default(now())
 
   @@index([createdAt])
 }
 
 model PdvPremioOrigem {
-  id          Int      @id @default(autoincrement())
-  premioId    Int
-  premio      PdvPremio @relation(fields: [premioId], references: [id], onDelete: Cascade)
-  nome        String
-  valor       Float
-  createdAt   DateTime @default(now())
+  id        Int       @id @default(autoincrement())
+  premioId  Int
+  premio    PdvPremio @relation(fields: [premioId], references: [id], onDelete: Cascade)
+  nome      String
+  valor     Float
+  createdAt DateTime  @default(now())
 
   @@index([premioId])
 }
 
 model PdvCupom {
-  id              Int       @id @default(autoincrement())
-  codigo          String    @unique
-  tipo            String    // "PERCENTUAL" ou "FIXO"
-  valor           Float     // Percentual (ex: 10) ou valor fixo (ex: 5.00)
-  descricao       String?
-  validoAte       DateTime?
-  limiteUso       Int?      // null = ilimitado
-  vezesUsado      Int       @default(0)
-  ativo           Boolean   @default(true)
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  id         Int       @id @default(autoincrement())
+  codigo     String    @unique
+  tipo       String // "PERCENTUAL" ou "FIXO"
+  valor      Float // Percentual (ex: 10) ou valor fixo (ex: 5.00)
+  descricao  String?
+  validoAte  DateTime?
+  limiteUso  Int? // null = ilimitado
+  vezesUsado Int       @default(0)
+  ativo      Boolean   @default(true)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
 
   @@index([codigo])
   @@index([ativo])
 }
 
 model PdvTaxaMaquina {
-  id          Int      @id @default(autoincrement())
-  nome        String   // Ex: "Taxa cartão crédito", "Taxa PIX"
-  tipo        String   // "PERCENTUAL" ou "FIXO"
-  valor       Float
-  ativo       Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-}
-
-model PdvConfigVenda {
-  id              Int      @id @default(autoincrement())
-  chave           String   @unique  // Ex: "limite_comanda", "max_comandas_abertas"
-  valor           String   // Armazena o valor como string (flex)
-  descricao       String?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-}
-
-model PdvFormaPagamento {
   id        Int      @id @default(autoincrement())
-  nome      String   @unique  // Ex: "Dinheiro", "Cartão", "PIX", "Fiado"
-  valor     String   // valor interno usado no sistema (ex: "dinheiro", "cartao", "pix", "fiado")
+  nome      String // Ex: "Taxa cartão crédito", "Taxa PIX"
+  tipo      String // "PERCENTUAL" ou "FIXO"
+  valor     Float
   ativo     Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
 
+model PdvConfigVenda {
+  id        Int      @id @default(autoincrement())
+  chave     String   @unique // Ex: "limite_comanda", "max_comandas_abertas"
+  valor     String // Armazena o valor como string (flex)
+  descricao String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model PdvFormaPagamento {
+  id           Int      @id @default(autoincrement())
+  nome         String   @unique // Ex: "Dinheiro", "Cartão", "PIX", "Fiado"
+  valor        String // valor interno usado no sistema (ex: "dinheiro", "cartao", "pix", "fiado")
+  ativo        Boolean  @default(true)
+  pointEnabled Boolean  @default(false) // se true, o pagamento é processado na maquininha Mercado Pago Point
+  pointType    String? // tipo de meio enviado à Point: "credit_card" | "debit_card" | null (o comprador escolhe no terminal)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
 model PdvComanda {
-  id            Int               @id @default(autoincrement())
+  id            Int              @id @default(autoincrement())
   clientId      Int
-  client        Client            @relation(fields: [clientId], references: [id])
-  saleId        Int?              // Venda que originou a comanda
+  client        Client           @relation(fields: [clientId], references: [id])
+  saleId        Int? // Venda que originou a comanda
   total         Float
-  status        String            @default("ABERTA") // "ABERTA", "PAGA", "FIADO"
-  paymentMethod String?           // Preenchido quando paga
+  status        String           @default("ABERTA") // "ABERTA", "PAGA", "FIADO"
+  paymentMethod String? // Preenchido quando paga
   items         PdvComandaItem[]
-  createdAt     DateTime          @default(now())
+  createdAt     DateTime         @default(now())
   paidAt        DateTime?
-  updatedAt     DateTime          @updatedAt
+  updatedAt     DateTime         @updatedAt
 
   @@index([clientId])
   @@index([status])
@@ -465,38 +500,41 @@ model PdvComandaItem {
 }
 
 model PdvCaixaControle {
-  id              Int       @id @default(autoincrement())
-  status          String    @default("ABERTO") // "ABERTO", "FECHADO"
-  saldoInicial    Float     @default(0)
-  saldoFinal      Float?
-  totalEntradas   Float     @default(0)
-  totalSaidas     Float     @default(0)
-  observacao      String?
-  abertoPorId     Int?
-  abertoPorNome   String?
-  fechadoPorId    Int?
-  fechadoPorNome  String?
-  abertoEm        DateTime  @default(now())
-  fechadoEm       DateTime?
-  transacoes      PdvCaixaTransacao[]
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  id             Int                 @id @default(autoincrement())
+  status         String              @default("ABERTO") // "ABERTO", "FECHADO"
+  saldoInicial   Float               @default(0)
+  saldoFinal     Float?
+  totalEntradas  Float               @default(0)
+  totalSaidas    Float               @default(0)
+  observacao     String?
+  abertoPorId    Int?
+  abertoPorNome  String?
+  fechadoPorId   Int?
+  fechadoPorNome String?
+  abertoEm       DateTime            @default(now())
+  fechadoEm      DateTime?
+  balanceId      Int? // FK para o registro Balance gerado no fechamento
+  balance        Balance?            @relation(fields: [balanceId], references: [id], onDelete: Restrict)
+  transacoes     PdvCaixaTransacao[]
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
 
   @@index([status])
   @@index([abertoEm])
+  @@index([balanceId])
 }
 
 model PdvCaixaTransacao {
-  id          Int      @id @default(autoincrement())
-  caixaId     Int
-  caixa       PdvCaixaControle @relation(fields: [caixaId], references: [id], onDelete: Cascade)
-  tipo        String   // "ENTRADA", "SAIDA"
-  categoria   String   // "VENDA", "SANGRIA", "VALE", "ADD", "PREMIO", "TROCO", "ABERTURA", "OUTRO"
-  valor       Float
-  descricao   String?
-  userId      Int?
-  userName    String?
-  createdAt   DateTime @default(now())
+  id        Int              @id @default(autoincrement())
+  caixaId   Int
+  caixa     PdvCaixaControle @relation(fields: [caixaId], references: [id], onDelete: Cascade)
+  tipo      String // "ENTRADA", "SAIDA"
+  categoria String // "VENDA", "SANGRIA", "VALE", "ADD", "PREMIO", "TROCO", "ABERTURA", "OUTRO"
+  valor     Float
+  descricao String?
+  userId    Int?
+  userName  String?
+  createdAt DateTime         @default(now())
 
   @@index([caixaId])
   @@index([tipo])
@@ -505,14 +543,14 @@ model PdvCaixaTransacao {
 
 model PdvGastoBar {
   id            Int      @id @default(autoincrement())
-  tipo          String   // "PRODUTO" ou "DESCONTO"
+  tipo          String // "PRODUTO" ou "DESCONTO"
   funcionarioId Int?
-  funcionario   String   // nome do funcionário
-  descricao     String?  // nome do produto ou descrição do desconto
-  quantidade    Float?   // qtd de produtos
-  valorUnitario Float?   // valor unitário do produto
-  valorTotal    Float    // valor total do gasto/desconto
-  saleId        Int?     // venda que originou o desconto
+  funcionario   String // nome do funcionário
+  descricao     String? // nome do produto ou descrição do desconto
+  quantidade    Float? // qtd de produtos
+  valorUnitario Float? // valor unitário do produto
+  valorTotal    Float // valor total do gasto/desconto
+  saleId        Int? // venda que originou o desconto
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
@@ -524,34 +562,142 @@ model PdvGastoBar {
 // ===== COMPOSIÇÃO DE PRODUTOS (componentes/variantes) =====
 
 model ComposicaoProduto {
-  id          Int      @id @default(autoincrement())
+  id          Int               @id @default(autoincrement())
   estoqueId   Int
-  nome        String   // Ex: "Selecionar Whisky", "Sabor do Gelo"
+  nome        String // Ex: "Selecionar Whisky", "Sabor do Gelo"
   descricao   String?
-  obrigatorio Boolean  @default(true)
-  multiplo    Boolean  @default(false) // true = checkbox (múltipla escolha)
-  minOpcoes   Int      @default(1)
-  maxOpcoes   Int      @default(1)
-  ordem       Int      @default(0)
+  obrigatorio Boolean           @default(true)
+  multiplo    Boolean           @default(false) // true = checkbox (múltipla escolha)
+  minOpcoes   Int               @default(1)
+  maxOpcoes   Int               @default(1)
+  porcoesGratis Int             @default(0) // Nº de porções sem custo (montagem). 0 = desativado
+  valorAdicional Float          @default(0) // Valor por porção além das grátis (montagem)
+  permiteQuantidade Boolean     @default(false) // true = PDV permite escolher a quantidade de cada opção (ex.: 2x Coco + 2x Maracujá)
+  exigeTotalExato   Boolean     @default(false) // true = a soma das quantidades precisa fechar exatamente maxOpcoes
+  ordem       Int               @default(0)
   opcoes      ComposicaoOpcao[]
-  estoque     Estoque  @relation(fields: [estoqueId], references: [id], onDelete: Cascade)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  estoque     Estoque           @relation(fields: [estoqueId], references: [id], onDelete: Cascade)
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
 
   @@index([estoqueId])
 }
 
 model ComposicaoOpcao {
-  id           Int      @id @default(autoincrement())
+  id           Int               @id @default(autoincrement())
   composicaoId Int
   composicao   ComposicaoProduto @relation(fields: [composicaoId], references: [id], onDelete: Cascade)
-  nome         String   // Ex: "Jack Daniel's", "Gelo de Limão", "Red Bull"
-  valorExtra   Float    @default(0)
-  disponivel   Boolean  @default(true)
-  estoqueId    Int?     // Vinculado ao item de estoque contabilizável
-  estoque      Estoque? @relation(fields: [estoqueId], references: [id], onDelete: SetNull)
-  createdAt    DateTime @default(now())
+  nome         String // Ex: "Jack Daniel's", "Gelo de Limão", "Red Bull"
+  valorExtra   Float             @default(0)
+  disponivel   Boolean           @default(true)
+  exclusivo    Boolean           @default(false) // true = ao selecionar, bloqueia as demais opções do grupo (ex.: Vibe 2L)
+  base         Boolean           @default(false) // true = componente fixo da variação: já vem selecionado e não pode ser removido
+  consomeQtd   Int               @default(1) // quanto da quota do grupo cada unidade desta opção consome
+  estoqueId    Int? // Vinculado ao item de estoque contabilizável
+  estoque      Estoque?          @relation(fields: [estoqueId], references: [id], onDelete: SetNull)
+  createdAt    DateTime          @default(now())
 
   @@index([composicaoId])
   @@index([estoqueId])
+}
+
+model EstoqueMinimo {
+  id               Int      @id @default(autoincrement())
+  estoqueId        Int      @unique
+  estoque          Estoque  @relation(fields: [estoqueId], references: [id], onDelete: Cascade)
+  quantidadeMinima Float // Quantidade mínima ideal para o estoque
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
+
+model ListaCompras {
+  id               Int       @id @default(autoincrement())
+  estoqueId        Int
+  estoque          Estoque   @relation(fields: [estoqueId], references: [id], onDelete: Cascade)
+  nomeProduto      String
+  quantidadeAtual  Float
+  quantidadeMinima Float
+  status           String    @default("PENDENTE") // PENDENTE, CONCLUIDO
+  concluidoEm      DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([estoqueId])
+  @@index([status])
+}
+
+model FollowUp {
+  id            Int       @id @default(autoincrement())
+  estoqueId     Int
+  estoque       Estoque   @relation(fields: [estoqueId], references: [id], onDelete: Cascade)
+  semana        String // "YYYY-Www" – identificador da semana ISO
+  temEstoque    Boolean? // null = pendente resposta, true = sim, false = não
+  quantidade    Float? // quantidade informada pelo usuário (se temEstoque=true)
+  observacao    String?
+  respondidoEm  DateTime?
+  respondidoPor String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@unique([estoqueId, semana])
+  @@index([estoqueId])
+  @@index([semana])
+  @@index([temEstoque])
+}
+
+// ===== ORIGENS DE SALDO (BAG, MÁQUINA, CAIXA) =====
+
+model PdvOrigemSaldo {
+  id        Int      @id @default(autoincrement())
+  nome      String   @unique // "BAG", "MÁQUINA", "CAIXA"
+  saldo     Float    @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  movimentos PdvOrigemSaldoMovimento[]
+
+  @@index([nome])
+}
+
+model PdvOrigemSaldoMovimento {
+  id          Int            @id @default(autoincrement())
+  origemId    Int
+  origem      PdvOrigemSaldo @relation(fields: [origemId], references: [id], onDelete: Cascade)
+  tipo        String // "ENTRADA" | "SAIDA" | "AJUSTE"
+  valor       Float // valor positivo sempre; tipo determina direção
+  saldoAntes  Float
+  saldoDepois Float
+  descricao   String?
+  userId      Int?
+  userName    String?
+  createdAt   DateTime       @default(now())
+
+  @@index([origemId])
+  @@index([createdAt])
+}
+
+// Ordem de pagamento presencial criada na maquininha Mercado Pago Point.
+// Persiste o vínculo entre a order do Mercado Pago e a venda gerada no PDV,
+// permitindo conciliação via polling de status e via webhook.
+model PointOrder {
+  id                Int      @id @default(autoincrement())
+  mpOrderId         String?  @unique // ID da order no Mercado Pago (ORD...)
+  externalReference String   @unique // referência externa gerada pelo PDV
+  terminalId        String // terminal Point utilizado
+  amount            Float // valor da transação
+  paymentType       String? // "credit_card" | "debit_card" | null
+  installments      Int      @default(1)
+  description       String?
+  status            String   @default("created") // created, at_terminal, processed, canceled, failed, expired, refunded, action_required
+  statusDetail      String?
+  mpPaymentId       String? // ID do pagamento aprovado (PAY...)
+  saleId            Int? // venda gerada no PDV após aprovação
+  operator          String?
+  rawPayload        String? // último payload/resposta relevante (JSON) para auditoria
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([status])
+  @@index([mpOrderId])
+  @@index([createdAt])
 }
