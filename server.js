@@ -2348,17 +2348,35 @@ app.get("/api/employees", async (req, res) => {
       include: { points: true }, // Inclui os pontos diários relacionados
     });
 
+    // Último login vem da tabela de usuários, relacionado pelo nome (case-insensitive).
+    const users = await prisma.user.findMany({ select: { name: true, username: true, loginAt: true } });
+    const loginPorNome = new Map();
+    users.forEach((u) => {
+      if (!u.loginAt) return;
+      [u.name, u.username].filter(Boolean).forEach((n) => {
+        const chave = n.trim().toLowerCase();
+        const atual = loginPorNome.get(chave);
+        if (!atual || u.loginAt > atual) loginPorNome.set(chave, u.loginAt);
+      });
+    });
+
     // Adiciona valores padrão para campos se estiverem null
-    const employeesWithDefaults = employees.map((employee) => ({
-      ...employee,
-      carga: employee.carga || 8,
-      valorHora: employee.valorHora || 0,
-      metaHoras: employee.metaHoras || null,
-      bonificacao: employee.bonificacao || null,
-      contato: employee.contato || null,
-      dataEntrada: employee.dataEntrada || null,
-      ativo: employee.ativo !== undefined ? employee.ativo : true,
-    }));
+    const employeesWithDefaults = employees.map((employee) => {
+      const ultimoLogin = loginPorNome.get((employee.name || "").trim().toLowerCase()) || null;
+      const local = ultimoLogin ? dataHoraLocal(ultimoLogin) : null;
+      return {
+        ...employee,
+        ultimoLogin,
+        ultimoLoginLocal: local ? `${local.date} ${local.time}` : null,
+        carga: employee.carga || 8,
+        valorHora: employee.valorHora || 0,
+        metaHoras: employee.metaHoras || null,
+        bonificacao: employee.bonificacao || null,
+        contato: employee.contato || null,
+        dataEntrada: employee.dataEntrada || null,
+        ativo: employee.ativo !== undefined ? employee.ativo : true,
+      };
+    });
 
     res.json(employeesWithDefaults);
   } catch (error) {
