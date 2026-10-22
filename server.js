@@ -8,6 +8,7 @@ const morgan = require("morgan");
 const { PrismaClient } = require("@prisma/client");
 const { format, parse, parseISO } = require("date-fns");
 const nodemailer = require("nodemailer");
+const { normalizarEntrada, maiusculo } = require("./normalizarEntrada");
 const prisma = new PrismaClient();
 const app = express();
 const port = 3000;
@@ -31,6 +32,7 @@ app.use(
 );
 app.use(cors());
 app.use(express.json({ limit: "15mb" }));
+app.use(normalizarEntrada);
 app.use(morgan("dev"));
 
 // Middleware de autenticação
@@ -235,7 +237,7 @@ app.post("/api/register", async (req, res) => {
     if (funcionario) {
       await prisma.employee.create({
         data: {
-          name: name || username,
+          name: maiusculo(name || username),
           position: null,
           carga: 0,
           valorHora: 0,
@@ -1308,7 +1310,7 @@ async function resolveProductBaseUnit(client, productId, eqMap, explicitBaseUnit
     const val = eq?.value ?? 1; // unidades não cadastradas valem 1 (ex.: "Unidade", "Lata")
     if (val < bestVal) { bestVal = val; best = r.unit; }
   }
-  return best || "Unidade";
+  return best || "UNIDADE";
 }
 
 // ===== Estoque por montante (ML) — opt-in por produto (Estoque.controlaMontante) =====
@@ -3998,6 +4000,12 @@ app.get('/api/unit-equivalences', async (req, res) => {
   }
 });
 
+// A unidade na URL segue o mesmo padrão (trim + maiúsculas) dos cadastros.
+app.param("unitName", (req, res, next, valor) => {
+  req.params.unitName = maiusculo(valor);
+  next();
+});
+
 // POST /api/unit-equivalences - Criar nova equivalência
 app.post('/api/unit-equivalences', async (req, res) => {
   try {
@@ -5171,7 +5179,7 @@ app.post("/api/pdv-caixa-vale", async (req, res) => {
     if (userName) {
       let funcionarioId = null;
       try {
-        const emp = await prisma.employee.findFirst({ where: { name: userName } });
+        const emp = await prisma.employee.findFirst({ where: { name: { equals: userName.trim(), mode: "insensitive" } } });
         funcionarioId = emp?.id || null;
       } catch (e) { /* nome pode não bater com um funcionário do Ponto */ }
 
